@@ -2919,6 +2919,7 @@ class GameScene extends Phaser.Scene {
         // State
         this.money = this.carryMoney;
         this.poopsCollected = 0;
+        this.goldenCollected = 0;
         this.poopsMissed = 0;
         this.missedSinceLastEvent = 0;
         this.tickets = 0;
@@ -3273,6 +3274,7 @@ class GameScene extends Phaser.Scene {
             const earned = value * this.comboMultiplier;
             this.money += earned;
             this.poopsCollected++;
+            if (nearest.type === 'gold') this.goldenCollected++;
 
             // Visual feedback
             const ft = this.add.text(nearest.sprite.x, nearest.sprite.y - 20, `+${earned}€`,
@@ -4361,7 +4363,7 @@ class GameScene extends Phaser.Scene {
             'BONUS-LEVEL VORBEI!',
             '',
             `Haufen gesammelt: ${this.poopsCollected}`,
-            `Davon goldene: ${this.activePoops.filter(p => p.type === 'gold' && p.collected).length}`,
+            `Davon goldene: ${this.goldenCollected}`,
             '',
             `Bonus-Taschengeld: +${levelEarnings}€`,
             bonusDouble ? '🌟 ALLE EINGESAMMELT! GELD VERDOPPELT! 🌟' : '',
@@ -4382,14 +4384,71 @@ class GameScene extends Phaser.Scene {
             '',
         ].filter(Boolean);
 
-        const txt = this.add.text(GW/2, GH/2 - 40, lines.join('\n'),
+        const txtY = this.isBonus ? GH/2 - 60 : GH/2 - 40;
+        const txt = this.add.text(GW/2, txtY, lines.join('\n'),
             { fontFamily: 'monospace', fontSize: '16px', color: this.isBonus ? '#FFD700' : '#FFDD00', align: 'center', lineSpacing: 4, stroke: '#333', strokeThickness: 2 }).setOrigin(0.5).setDepth(200);
+
+        // Bonus: show poop collection graphic (row of mini poops)
+        if (this.isBonus) {
+            const total = this.poopsCollected + this.poopsMissed;
+            const maxIcons = Math.min(total, 30); // cap for display
+            const iconSize = Math.min(24, Math.max(14, (GW - 100) / maxIcons));
+            const startX = GW/2 - (maxIcons * iconSize) / 2 + iconSize/2;
+            const iconY = GH/2 + 55;
+            // Show collected first (gold ones highlighted), then missed as dark
+            let goldShown = 0;
+            for (let i = 0; i < maxIcons; i++) {
+                const isCollected = i < this.poopsCollected;
+                const isGold = isCollected && goldShown < this.goldenCollected;
+                if (isGold) goldShown++;
+                const key = isGold ? 'poop_gold' : 'poop_small';
+                const icon = this.add.image(startX + i * iconSize, iconY, key)
+                    .setDepth(201).setScale(iconSize / 40);
+                if (!isCollected) {
+                    icon.setAlpha(0.2).setTint(0x444444);
+                }
+                // Pop-in animation
+                icon.setScale(0);
+                this.tweens.add({
+                    targets: icon, scaleX: iconSize/40, scaleY: iconSize/40,
+                    duration: 200, delay: i * 40, ease: 'Back.easeOut'
+                });
+            }
+            // "ALLE!" badge if all collected
+            if (allCollected && total > 0) {
+                const badge = this.add.text(GW/2, iconY - 22, 'ALLE EINGESAMMELT!',
+                    { fontFamily: 'monospace', fontSize: '14px', color: '#FFD700',
+                      stroke: '#333', strokeThickness: 3 }).setOrigin(0.5).setDepth(201).setAlpha(0).setScale(0.5);
+                this.tweens.add({
+                    targets: badge, alpha: 1, scaleX: 1.2, scaleY: 1.2,
+                    duration: 500, delay: maxIcons * 40 + 200, ease: 'Back.easeOut',
+                    onComplete: () => {
+                        this.tweens.add({ targets: badge, scaleX: 1, scaleY: 1, duration: 200 });
+                    }
+                });
+                // Sparkle around the badge
+                for (let i = 0; i < 8; i++) {
+                    const angle = (i / 8) * Math.PI * 2;
+                    const sx = GW/2 + Math.cos(angle) * 120;
+                    const sy = iconY - 22 + Math.sin(angle) * 20;
+                    const sp = this.add.image(GW/2, iconY - 22, 'sparkle').setDepth(201).setScale(0).setAlpha(0);
+                    this.tweens.add({
+                        targets: sp, x: sx, y: sy, scaleX: 1.5, scaleY: 1.5, alpha: 1,
+                        duration: 400, delay: maxIcons * 40 + 400 + i * 50,
+                        onComplete: () => {
+                            this.tweens.add({ targets: sp, alpha: 0, scaleX: 0, scaleY: 0, duration: 300, onComplete: () => sp.destroy() });
+                        }
+                    });
+                }
+            }
+        }
 
         const isNextBoss = !this.isBonus && this.levelNum % 5 === 0;
         const isNextBonus = !this.isBonus && !isNextBoss && this.levelNum % 3 === 0;
         const btnLabel = isNextBoss ? '  BOSS-KAMPF!  ' : isNextBonus ? '  BONUS-LEVEL!  ' : '  WEITER!  ';
         const btnColor = isNextBoss ? '#CC2222' : isNextBonus ? '#CC8800' : '#44AA44';
-        const btnNext = this.add.text(GW/2, GH/2 + 100, btnLabel,
+        const btnY = this.isBonus ? GH/2 + 130 : GH/2 + 100;
+        const btnNext = this.add.text(GW/2, btnY, btnLabel,
             { fontFamily: 'monospace', fontSize: '22px', color: '#FFF', backgroundColor: btnColor, padding: { x: 16, y: 8 } }).setOrigin(0.5).setDepth(200).setInteractive({ useHandCursor: true });
         if (isNextBoss) {
             this.add.text(GW/2, GH/2 + 130, `${this.poopsCollected} Beutel = Munition!`, { fontFamily: 'monospace', fontSize: '12px', color: '#FF8844', stroke: '#333', strokeThickness: 2 }).setOrigin(0.5).setDepth(200);
@@ -4465,7 +4524,7 @@ class BossScene extends Phaser.Scene {
         this.invincible = false;
         this.playerOnGround = true;
         this.playerVelY = 0;
-        this.playerBaseY = GROUND_Y - 45;
+        this.playerBaseY = GROUND_Y - 50;
 
         // Boss state
         this.bossX = GW - 160;
