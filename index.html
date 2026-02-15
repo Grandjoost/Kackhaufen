@@ -101,17 +101,43 @@ const SaveMgr = {
 
 // === SOUND MANAGER ===
 const SndMgr = {
-    ctx: null, muted: false, musicGain: null, musicOscs: [],
+    ctx: null, muted: false, musicGain: null, musicOscs: [], _unlocked: false,
     init() {
         if (this.ctx) return;
         this.ctx = new (window.AudioContext || window.webkitAudioContext)();
         this.masterGain = this.ctx.createGain();
         this.masterGain.gain.value = 0.5;
         this.masterGain.connect(this.ctx.destination);
+        // iOS: AudioContext starts suspended, must be unlocked on user gesture
+        if (this.ctx.state === 'suspended') {
+            const unlock = () => {
+                if (this._unlocked) return;
+                this.ctx.resume().then(() => {
+                    this._unlocked = true;
+                    // Play a silent buffer to fully unlock iOS audio
+                    const buf = this.ctx.createBuffer(1, 1, 22050);
+                    const src = this.ctx.createBufferSource();
+                    src.buffer = buf;
+                    src.connect(this.ctx.destination);
+                    src.start(0);
+                });
+            };
+            document.addEventListener('touchstart', unlock, { once: false });
+            document.addEventListener('touchend', unlock, { once: false });
+            document.addEventListener('click', unlock, { once: false });
+        } else {
+            this._unlocked = true;
+        }
     },
-    resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); },
+    resume() {
+        if (!this.ctx) return;
+        if (this.ctx.state === 'suspended') {
+            this.ctx.resume();
+        }
+    },
     _tone(freq, dur, type, vol, delay) {
         if (this.muted || !this.ctx) return;
+        if (this.ctx.state === 'suspended') this.ctx.resume();
         const t = this.ctx.currentTime + (delay || 0);
         const o = this.ctx.createOscillator();
         const g = this.ctx.createGain();
@@ -124,6 +150,7 @@ const SndMgr = {
     },
     _noise(dur, vol, delay) {
         if (this.muted || !this.ctx) return;
+        if (this.ctx.state === 'suspended') this.ctx.resume();
         const t = this.ctx.currentTime + (delay || 0);
         const buf = this.ctx.createBuffer(1, this.ctx.sampleRate * dur, this.ctx.sampleRate);
         const d = buf.getChannelData(0);
@@ -151,6 +178,7 @@ const SndMgr = {
     click()   { this._tone(800, 0.05, 'square', 0.15); },
     startMusic(bpmOverride) {
         if (!this.ctx || this.muted) return;
+        if (this.ctx.state === 'suspended') this.ctx.resume();
         this.stopMusic();
         this.musicGain = this.ctx.createGain();
         this.musicGain.gain.value = 0.18;
@@ -202,6 +230,7 @@ const SndMgr = {
     bossDefeat() { this._noise(0.3, 0.3); this._tone(200, 0.15, 'sawtooth', 0.3); this._tone(100, 0.3, 'triangle', 0.25, 0.1); [0.4,0.52,0.64,0.76,0.88].forEach((d,i) => this._tone([523,659,784,1047,1319][i], 0.3, 'square', 0.2, d)); },
     startGoHomeMusic() {
         if (!this.ctx || this.muted) return;
+        if (this.ctx.state === 'suspended') this.ctx.resume();
         this.stopMusic();
         this.musicGain = this.ctx.createGain();
         this.musicGain.gain.value = 0.2;
@@ -245,6 +274,7 @@ const SndMgr = {
     playerHit()  { this._tone(200, 0.05, 'square', 0.35); this._tone(100, 0.2, 'triangle', 0.3, 0.05); this._tone(80, 0.15, 'sawtooth', 0.15, 0.15); },
     startBossMusic() {
         if (!this.ctx || this.muted) return;
+        if (this.ctx.state === 'suspended') this.ctx.resume();
         this.stopMusic();
         this.musicGain = this.ctx.createGain();
         this.musicGain.gain.value = 0.18;
@@ -4783,38 +4813,63 @@ class BossScene extends Phaser.Scene {
         this.throwCooldown = 0;
         this.collectCooldown = 0;
 
-        // Touch input
+        // Touch input (multitouch: pointer1 + pointer2)
+        this.input.addPointer(1); // enable 2nd pointer for multitouch
         this.touchDucking = false;
-        this.input.on('pointerdown', (pointer) => {
+        this.touchMoveDir = 0;
+        this.touchJumpPointer = null;
+
+        const handlePointerDown = (pointer) => {
             SndMgr.resume();
             if (this.isGameOver) return;
             if (pointer.x > GW / 2) {
                 if (pointer.y < GH / 2) {
                     this.throwBag();
                 } else {
-                    // Right lower = duck (hold to stay ducked)
                     this.touchDucking = true;
                 }
             } else {
-                if (pointer.y < GH / 2) {
+                if (pointer.y < GH / 3) {
+                    // Top third left = jump
                     this.playerJump();
+                    this.touchJumpPointer = pointer;
+                } else {
+                    // Bottom two-thirds left = move
+                    this.touchMoveDir = pointer.x < GW / 4 ? -1 : 1;
                 }
             }
-        });
-        this.touchMoveDir = 0;
-        this.input.on('pointermove', (pointer) => {
-            if (!pointer.isDown || pointer.x > GW / 2) { this.touchMoveDir = 0; return; }
+        };
+        const handlePointerMove = (pointer) => {
+            if (!pointer.isDown) return;
+            if (pointer === this.touchJumpPointer) return; // don't convert jump to move
+            if (pointer.x > GW / 2) return;
             this.touchMoveDir = pointer.x < GW / 4 ? -1 : 1;
-        });
-        this.input.on('pointerup', () => { this.touchMoveDir = 0; this.touchDucking = false; });
+        };
+        const handlePointerUp = (pointer) => {
+            if (pointer === this.touchJumpPointer) { this.touchJumpPointer = null; return; }
+            // Check if any pointer still held on left side for movement
+            const p1 = this.input.pointer1;
+            const p2 = this.input.pointer2;
+            const anyLeftDown = (p1.isDown && p1.x <= GW/2) || (p2.isDown && p2.x <= GW/2);
+            if (!anyLeftDown) this.touchMoveDir = 0;
+            // Check ducking
+            const anyRightDown = (p1.isDown && p1.x > GW/2 && p1.y >= GH/2) || (p2.isDown && p2.x > GW/2 && p2.y >= GH/2);
+            if (!anyRightDown) this.touchDucking = false;
+        };
+        this.input.on('pointerdown', handlePointerDown);
+        this.input.on('pointermove', handlePointerMove);
+        this.input.on('pointerup', handlePointerUp);
 
         // Control hints
-        this.add.text(GW - 10, GH - 36, 'F / Oben-Rechts = Werfen', {
-            fontFamily: 'monospace', fontSize: '10px', color: '#AAA'
-        }).setOrigin(1, 0.5).setDepth(100).setAlpha(0.6);
-        this.add.text(GW - 10, GH - 22, 'E / Unten-Rechts = Aufheben', {
-            fontFamily: 'monospace', fontSize: '10px', color: '#AAA'
-        }).setOrigin(1, 0.5).setDepth(100).setAlpha(0.6);
+        this.add.text(GW - 10, GH - 50, '← Links / Rechts →  bewegen', {
+            fontFamily: 'monospace', fontSize: '9px', color: '#AAA'
+        }).setOrigin(1, 0.5).setDepth(100).setAlpha(0.5);
+        this.add.text(GW - 10, GH - 38, '↑ Springen  |  F = Werfen', {
+            fontFamily: 'monospace', fontSize: '9px', color: '#AAA'
+        }).setOrigin(1, 0.5).setDepth(100).setAlpha(0.5);
+        this.add.text(GW - 10, GH - 26, 'E = Aufheben  |  Leertaste = Springen', {
+            fontFamily: 'monospace', fontSize: '9px', color: '#AAA'
+        }).setOrigin(1, 0.5).setDepth(100).setAlpha(0.5);
 
         // Start boss music
         SndMgr.startBossMusic();
