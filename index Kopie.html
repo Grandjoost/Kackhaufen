@@ -1,0 +1,2738 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Achtung Kackhaufen!</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body {
+            width: 100%; height: 100%;
+            overflow: hidden;
+            background: #222;
+            touch-action: none;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #game-container {
+            width: 100%; height: 100%;
+            display: flex; align-items: center; justify-content: center;
+        }
+        canvas { image-rendering: pixelated; image-rendering: crisp-edges; }
+    </style>
+</head>
+<body>
+    <div id="game-container"></div>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+    <script>
+// ================================================================
+//  ACHTUNG KACKHAUFEN! - Das ultimative Hundehaufen-Abenteuer
+// ================================================================
+
+// === CONSTANTS ===
+const GW = 800, GH = 500;
+const GROUND_Y = 400;
+const PS = 3; // pixel size for sprites
+const PLAYER_X = 180;
+
+const COLORS = {
+    HAIR: 0xC8A060, SKIN: 0xFFD4A3, EYE: 0x333333, MOUTH: 0xCC6644,
+    SHIRT: 0xDD3333, PANTS: 0x3366AA, SHOES: 0x8B5E3C, LEASH: 0x886644,
+    DACKEL: 0x8B4513, MOPS: 0xDEB887, LABRADOR: 0xDAA520, PUDEL: 0xEEEEEE, SCHAFER: 0x654321,
+    POOP: 0x6B3410, POOP_L: 0x8B5E3C, POOP_GOLD: 0xFFD700,
+    SIDEWALK: 0xBBBBBB, ROAD: 0x666666, GRASS: 0x55AA55, SKY: 0x87CEEB,
+    GOLD: 0xFFD700, RED: 0xDD3333, WHITE: 0xFFFFFF, BLACK: 0x222222,
+};
+
+const COMBO_TEXTS = ['', '', 'DOPPELT!', 'COMBO x3!', 'MEGA COMBO!', 'KACK-COMBO!!'];
+const OMA_LINES = ['Du Lümmel!', 'Räum das auf!', 'Warte nur!', 'Du Frechdachs!', 'Das gibt was hinter die Löffel!'];
+const GAMEOVER_TEXTS = ['In der Kacke gelandet!', 'Ausgerutscht!', 'Das stinkt!', 'Voll reingetreten!'];
+const TIPS = [
+    'Tipp: Kacke einsammeln bringt Geld!',
+    'Tipp: Die Oma ist schneller als sie aussieht!',
+    'Tipp: Combos bringen Extra-Kohle!',
+    'Tipp: Nicht in die Haufen treten!',
+    'Tipp: Das Ordnungsamt kennt kein Pardon!',
+];
+
+const DOG_BREEDS = [
+    { name: 'Wurst', breed: 'dackel', color: COLORS.DACKEL, poopRate: 0.4, w: 18, h: 10 },
+    { name: 'Schnuffi', breed: 'mops', color: COLORS.MOPS, poopRate: 0.6, w: 12, h: 10 },
+    { name: 'Bello', breed: 'labrador', color: COLORS.LABRADOR, poopRate: 0.5, w: 14, h: 12 },
+    { name: 'Fifi', breed: 'pudel', color: COLORS.PUDEL, poopRate: 0.35, w: 12, h: 13 },
+    { name: 'Sir Barksalot', breed: 'schafer', color: COLORS.SCHAFER, poopRate: 0.55, w: 16, h: 13 },
+];
+
+const LEVELS = [];
+for (let i = 1; i <= 20; i++) {
+    LEVELS.push({
+        level: i,
+        dogs: Math.min(i, 5),
+        speed: 150 + i * 20,
+        distance: 6000 + i * 800,
+        poopGoal: 8 + i * 3,
+        weather: i <= 2 ? 'sunny' : ['sunny','sunny','rain','snow','fog'][i % 5],
+        obstacles: Math.min(1 + Math.floor(i / 2), 6),
+        catChance: i >= 3 ? 0.02 : 0,
+        omaAfter: i >= 2 ? 5 : 999,
+        env: ['suburb','suburb','park','park','city','school','suburb','park','city','school'][i % 10],
+    });
+}
+
+// === SAVE MANAGER ===
+const SaveMgr = {
+    _key: 'kackhaufen_save',
+    load() {
+        try { return JSON.parse(localStorage.getItem(this._key)) || this.defaults(); }
+        catch(e) { return this.defaults(); }
+    },
+    defaults() { return { highscores: [], totalMoney: 0, maxLevel: 1, settings: { sound: true } }; },
+    save(data) { try { localStorage.setItem(this._key, JSON.stringify(data)); } catch(e) {} },
+    addHighscore(data, entry) {
+        data.highscores.push(entry);
+        data.highscores.sort((a,b) => b.money - a.money);
+        data.highscores = data.highscores.slice(0, 10);
+        this.save(data);
+    }
+};
+
+// === SOUND MANAGER ===
+const SndMgr = {
+    ctx: null, muted: false, musicGain: null, musicOscs: [],
+    init() {
+        if (this.ctx) return;
+        this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        this.masterGain = this.ctx.createGain();
+        this.masterGain.gain.value = 0.3;
+        this.masterGain.connect(this.ctx.destination);
+    },
+    resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); },
+    _tone(freq, dur, type, vol, delay) {
+        if (this.muted || !this.ctx) return;
+        const t = this.ctx.currentTime + (delay || 0);
+        const o = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        o.type = type || 'square';
+        o.frequency.setValueAtTime(freq, t);
+        g.gain.setValueAtTime((vol || 0.3), t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+        o.connect(g); g.connect(this.masterGain);
+        o.start(t); o.stop(t + dur);
+    },
+    _noise(dur, vol, delay) {
+        if (this.muted || !this.ctx) return;
+        const t = this.ctx.currentTime + (delay || 0);
+        const buf = this.ctx.createBuffer(1, this.ctx.sampleRate * dur, this.ctx.sampleRate);
+        const d = buf.getChannelData(0);
+        for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+        const s = this.ctx.createBufferSource();
+        const g = this.ctx.createGain();
+        s.buffer = buf;
+        g.gain.setValueAtTime(vol || 0.1, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+        s.connect(g); g.connect(this.masterGain);
+        s.start(t); s.stop(t + dur);
+    },
+    jump()    { this._tone(300, 0.15, 'square', 0.2); this._tone(500, 0.1, 'square', 0.15, 0.05); },
+    collect() { this._tone(660, 0.08, 'square', 0.25); this._tone(880, 0.15, 'square', 0.2, 0.08); },
+    poop()    { this._tone(100, 0.2, 'triangle', 0.3); this._noise(0.1, 0.1, 0.05); },
+    bark()    { this._noise(0.08, 0.15); this._tone(400 + Math.random()*200, 0.1, 'sawtooth', 0.1); },
+    siren()   { const t=this.ctx?this.ctx.currentTime:0; if(!this.ctx||this.muted)return; const o=this.ctx.createOscillator(),g=this.ctx.createGain(); o.type='square'; o.frequency.setValueAtTime(600,t); o.frequency.linearRampToValueAtTime(900,t+0.3); o.frequency.linearRampToValueAtTime(600,t+0.6); g.gain.setValueAtTime(0.15,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.6); o.connect(g); g.connect(this.masterGain); o.start(t); o.stop(t+0.6); },
+    bonk()    { this._tone(200, 0.05, 'square', 0.4); this._tone(100, 0.2, 'triangle', 0.3, 0.05); this._noise(0.1, 0.2); },
+    fanfare() { [0,0.12,0.24,0.36,0.48].forEach((d,i) => this._tone([523,659,784,1047,1319][i], 0.3, 'square', 0.2, d)); },
+    sad()     { [0,0.2,0.4,0.6].forEach((d,i) => this._tone([400,350,300,200][i], 0.3, 'triangle', 0.2, d)); },
+    combo()   { this._tone(440, 0.08, 'square', 0.2); this._tone(554, 0.08, 'square', 0.2, 0.06); this._tone(660, 0.12, 'square', 0.25, 0.12); },
+    stomp()   { this._tone(200, 0.06, 'square', 0.3); this._tone(400, 0.1, 'square', 0.2, 0.06); this._tone(600, 0.15, 'square', 0.15, 0.12); },
+    meow()    { const t=this.ctx?this.ctx.currentTime:0; if(!this.ctx||this.muted)return; const o=this.ctx.createOscillator(),g=this.ctx.createGain(); o.type='sine'; o.frequency.setValueAtTime(700,t); o.frequency.linearRampToValueAtTime(900,t+0.2); o.frequency.linearRampToValueAtTime(600,t+0.4); g.gain.setValueAtTime(0.2,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.5); o.connect(g); g.connect(this.masterGain); o.start(t); o.stop(t+0.5); },
+    hiss()    { if(!this.ctx||this.muted)return; const t=this.ctx.currentTime; this._noise(0.25, 0.2); this._tone(1200, 0.15, 'sawtooth', 0.12); this._tone(900, 0.1, 'sawtooth', 0.08, 0.1); },
+    click()   { this._tone(800, 0.05, 'square', 0.15); },
+    startMusic(bpmOverride) {
+        if (!this.ctx || this.muted) return;
+        this.stopMusic();
+        this.musicGain = this.ctx.createGain();
+        this.musicGain.gain.value = 0.08;
+        this.musicGain.connect(this.masterGain);
+        const melody = [523,523,659,784,784,659,523,659, 523,523,659,784,784,659,523,0, 440,440,523,659,659,523,440,523, 392,392,523,659,659,523,440,523];
+        const bass =   [131,131,131,131,196,196,196,196, 131,131,131,131,196,196,196,196, 110,110,110,110,131,131,131,131, 98,98,131,131,196,196,196,196];
+        const bpm = bpmOverride || 160, noteLen = 60/bpm;
+        const loopLen = melody.length * noteLen;
+        const scheduleLoop = (startTime) => {
+            melody.forEach((freq, i) => {
+                if (freq === 0 || !this.musicGain) return;
+                const t = startTime + i * noteLen;
+                const o = this.ctx.createOscillator();
+                const g = this.ctx.createGain();
+                o.type = 'square'; o.frequency.value = freq;
+                g.gain.setValueAtTime(0.3, t);
+                g.gain.exponentialRampToValueAtTime(0.001, t + noteLen * 0.9);
+                o.connect(g); g.connect(this.musicGain);
+                o.start(t); o.stop(t + noteLen);
+                this.musicOscs.push(o);
+            });
+            bass.forEach((freq, i) => {
+                if (!this.musicGain) return;
+                const t = startTime + i * noteLen;
+                const o = this.ctx.createOscillator();
+                const g = this.ctx.createGain();
+                o.type = 'triangle'; o.frequency.value = freq;
+                g.gain.setValueAtTime(0.5, t);
+                g.gain.exponentialRampToValueAtTime(0.001, t + noteLen * 0.9);
+                o.connect(g); g.connect(this.musicGain);
+                o.start(t); o.stop(t + noteLen);
+                this.musicOscs.push(o);
+            });
+            this._musicTimer = setTimeout(() => scheduleLoop(startTime + loopLen), (loopLen - 1) * 1000);
+        };
+        scheduleLoop(this.ctx.currentTime + 0.1);
+    },
+    stopMusic() {
+        clearTimeout(this._musicTimer);
+        this.musicOscs.forEach(o => { try { o.stop(); } catch(e){} });
+        this.musicOscs = [];
+        if (this.musicGain) { this.musicGain.disconnect(); this.musicGain = null; }
+    },
+    toggleMute() { this.muted = !this.muted; if (this.muted) this.stopMusic(); return this.muted; }
+};
+
+// === SPRITE HELPERS ===
+function px(g, x, y, c) { g.fillStyle(c); g.fillRect(x*PS, y*PS, PS, PS); }
+function pxRect(g, x, y, w, h, c) { g.fillStyle(c); g.fillRect(x*PS, y*PS, w*PS, h*PS); }
+
+function genTex(scene, key, w, h, drawFn) {
+    const g = scene.add.graphics();
+    drawFn(g);
+    g.generateTexture(key, w * PS, h * PS);
+    g.destroy();
+}
+
+// === SPRITE GENERATION ===
+function generateAllSprites(scene) {
+    const C = COLORS;
+
+    // --- BOY BASE ---
+    function drawBoyBase(g, legFrame) {
+        // Hair base (dark blonde, shoulder-length, side-parted, slightly curly)
+        pxRect(g, 3, 0, 7, 2, C.HAIR);
+        pxRect(g, 2, 1, 9, 3, C.HAIR);
+        pxRect(g, 2, 3, 2, 3, C.HAIR); // left side hair
+        pxRect(g, 9, 3, 2, 3, C.HAIR); // right side hair
+        pxRect(g, 1, 4, 2, 2, C.HAIR); // longer left
+        // Hair highlights (lighter strands)
+        px(g, 4, 0, 0xDDB870); px(g, 7, 0, 0xDDB870);
+        px(g, 3, 1, 0xDDB870); px(g, 8, 2, 0xDDB870);
+        px(g, 2, 4, 0xDDB870); px(g, 10, 3, 0xDDB870);
+        // Face
+        pxRect(g, 3, 3, 7, 5, C.SKIN);
+        // Chin/neck shading
+        px(g, 4, 7, 0xEEC090); px(g, 5, 7, 0xEEC090); px(g, 6, 7, 0xEEC090);
+        px(g, 7, 7, 0xEEC090); px(g, 8, 7, 0xEEC090);
+        // Cheek blush
+        px(g, 4, 6, 0xFFBBA0); px(g, 8, 6, 0xFFBBA0);
+        // Eyes (pupil + white highlight)
+        px(g, 4, 4, C.EYE); px(g, 5, 4, C.EYE);
+        px(g, 7, 4, C.EYE); px(g, 8, 4, C.EYE);
+        px(g, 5, 4, C.WHITE); px(g, 8, 4, C.WHITE); // white highlights
+        // Smile with teeth
+        px(g, 5, 6, C.MOUTH); px(g, 6, 6, C.MOUTH); px(g, 7, 6, C.MOUTH);
+        px(g, 6, 6, C.WHITE); // teeth pixel
+        // Nose hint
+        px(g, 6, 5, 0xEEC090);
+        // Shirt collar
+        px(g, 4, 8, C.WHITE); px(g, 5, 8, C.WHITE); px(g, 6, 8, C.WHITE);
+        px(g, 7, 8, C.WHITE); px(g, 8, 8, C.WHITE);
+        // Shirt body
+        pxRect(g, 3, 8, 7, 5, C.SHIRT);
+        // Re-draw collar on top of shirt
+        px(g, 5, 8, C.WHITE); px(g, 6, 8, C.WHITE); px(g, 7, 8, C.WHITE);
+        // Shirt fold shadows
+        px(g, 4, 10, 0xBB2222); px(g, 8, 10, 0xBB2222);
+        px(g, 5, 11, 0xBB2222); px(g, 6, 12, 0xBB2222);
+        // Left arm (sleeve + skin showing)
+        pxRect(g, 2, 9, 1, 2, C.SHIRT);
+        px(g, 2, 11, C.SKIN); // skin below sleeve
+        // Right arm (sleeve + skin showing)
+        pxRect(g, 10, 9, 1, 2, C.SHIRT);
+        px(g, 10, 11, C.SKIN); // skin below sleeve
+        // Belt hint
+        pxRect(g, 3, 13, 7, 1, 0x2A5090);
+        // Pants
+        pxRect(g, 3, 14, 7, 2, C.PANTS);
+        // Legs + shoes depend on frame
+        if (legFrame === 0) { // neutral
+            pxRect(g, 3, 16, 3, 3, C.PANTS);
+            pxRect(g, 7, 16, 3, 3, C.PANTS);
+            // Shoe base
+            pxRect(g, 3, 19, 3, 1, C.SHOES);
+            pxRect(g, 7, 19, 3, 1, C.SHOES);
+            // Shoe laces
+            px(g, 4, 19, 0xFFFFFF);
+            px(g, 8, 19, 0xFFFFFF);
+        } else if (legFrame === 1) { // right forward
+            pxRect(g, 2, 16, 3, 3, C.PANTS);
+            pxRect(g, 8, 16, 3, 2, C.PANTS);
+            pxRect(g, 8, 15, 3, 1, C.PANTS);
+            pxRect(g, 2, 19, 3, 1, C.SHOES);
+            pxRect(g, 8, 18, 3, 1, C.SHOES);
+            px(g, 3, 19, 0xFFFFFF); px(g, 9, 18, 0xFFFFFF); // laces
+        } else if (legFrame === 2) { // left forward
+            pxRect(g, 3, 15, 3, 1, C.PANTS);
+            pxRect(g, 3, 16, 3, 2, C.PANTS);
+            pxRect(g, 7, 16, 3, 3, C.PANTS);
+            pxRect(g, 3, 18, 3, 1, C.SHOES);
+            pxRect(g, 7, 19, 3, 1, C.SHOES);
+            px(g, 4, 18, 0xFFFFFF); px(g, 8, 19, 0xFFFFFF); // laces
+        }
+    }
+
+    // Boy run frames
+    for (let f = 0; f < 4; f++) {
+        genTex(scene, 'boy_run_' + f, 13, 20, g => drawBoyBase(g, [0,1,0,2][f]));
+    }
+    // Boy jump
+    genTex(scene, 'boy_jump', 13, 20, g => {
+        drawBoyBase(g, 0);
+        // Arms up visual tweak - redraw arms higher with skin
+        pxRect(g, 1, 8, 2, 2, C.SKIN);
+        pxRect(g, 10, 8, 2, 2, C.SKIN);
+        px(g, 1, 7, C.SKIN); px(g, 11, 7, C.SKIN); // hands reaching up
+    });
+    // Boy collect / duck - crouching pose
+    genTex(scene, 'boy_collect', 16, 14, g => {
+        // Ducked body - wider and shorter
+        // Hair
+        pxRect(g, 5, 0, 7, 2, C.HAIR);
+        pxRect(g, 4, 1, 9, 2, C.HAIR);
+        pxRect(g, 4, 2, 2, 2, C.HAIR); // side hair
+        pxRect(g, 11, 2, 2, 2, C.HAIR);
+        // Hair highlights
+        px(g, 6, 0, 0xDDB870); px(g, 9, 1, 0xDDB870);
+        // Face
+        pxRect(g, 5, 2, 7, 4, C.SKIN);
+        px(g, 6, 3, C.EYE); px(g, 7, 3, C.EYE);
+        px(g, 9, 3, C.EYE); px(g, 10, 3, C.EYE);
+        px(g, 7, 3, C.WHITE); px(g, 10, 3, C.WHITE); // eye highlights
+        px(g, 7, 5, C.MOUTH); px(g, 8, 5, C.MOUTH);
+        // Chin shading
+        px(g, 7, 5, 0xEEC090);
+        // Shirt collar
+        px(g, 6, 6, C.WHITE); px(g, 7, 6, C.WHITE);
+        // Shirt (crouching, hunched over)
+        pxRect(g, 4, 6, 9, 3, C.SHIRT);
+        px(g, 6, 6, C.WHITE); px(g, 7, 6, C.WHITE); // collar re-drawn
+        px(g, 6, 7, 0xBB2222); // fold shadow
+        // Arm reaching forward with bag
+        pxRect(g, 12, 6, 2, 2, C.SKIN);
+        pxRect(g, 13, 8, 3, 2, 0x228822); // bag in hand
+        px(g, 14, 8, 0x44AA44); // bag highlight
+        // Pants + shoes (crouching)
+        pxRect(g, 4, 9, 4, 3, C.PANTS);
+        pxRect(g, 8, 9, 4, 3, C.PANTS);
+        pxRect(g, 3, 11, 4, 2, C.SHOES);
+        pxRect(g, 8, 12, 4, 2, C.SHOES);
+        px(g, 4, 11, 0xFFFFFF); px(g, 9, 12, 0xFFFFFF); // laces
+    });
+
+    // Boy belly-slide (fell on snow, poop on face!)
+    genTex(scene, 'boy_slide', 20, 10, g => {
+        // Lying flat on belly
+        // Legs behind
+        pxRect(g, 0, 4, 3, 3, C.SHOES);
+        px(g, 1, 4, 0xFFFFFF); // lace
+        pxRect(g, 2, 3, 3, 3, C.PANTS);
+        pxRect(g, 4, 3, 3, 3, C.PANTS);
+        // Body flat
+        pxRect(g, 6, 2, 8, 4, C.SHIRT);
+        px(g, 8, 3, 0xBB2222); px(g, 10, 4, 0xBB2222); // shirt fold shadows
+        // Arms forward
+        pxRect(g, 13, 4, 3, 2, C.SKIN);
+        px(g, 15, 4, 0xEEC090); // hand shading
+        // Head
+        pxRect(g, 14, 0, 5, 4, C.SKIN);
+        pxRect(g, 14, 0, 5, 2, C.HAIR);
+        px(g, 15, 0, 0xDDB870); px(g, 17, 0, 0xDDB870); // hair highlights
+        // Poop on face!
+        pxRect(g, 16, 2, 3, 2, C.POOP);
+        px(g, 17, 1, C.POOP_L); // poop splat
+        px(g, 18, 2, C.POOP_L); // dripping
+        // Eyes (dizzy X X)
+        px(g, 15, 2, C.EYE); px(g, 18, 2, C.EYE);
+        // Mouth (yuck!)
+        px(g, 16, 3, C.MOUTH);
+    });
+
+    // --- DOGS ---
+    function drawDog(g, breed) {
+        const info = DOG_BREEDS.find(d => d.breed === breed);
+        const c = info.color, w = info.w, h = info.h;
+        const dc = Phaser.Display.Color.IntegerToColor(c);
+        const darker = Phaser.Display.Color.GetColor(
+            Math.max(0, dc.red - 40), Math.max(0, dc.green - 40), Math.max(0, dc.blue - 40)
+        );
+        const lighter = Phaser.Display.Color.GetColor(
+            Math.min(255, dc.red + 35), Math.min(255, dc.green + 35), Math.min(255, dc.blue + 35)
+        );
+        if (breed === 'dackel') {
+            // Body with belly shading
+            pxRect(g, 3, 2, 12, 5, c); // long body
+            pxRect(g, 4, 6, 10, 1, lighter); // belly highlight
+            pxRect(g, 5, 5, 8, 1, darker); // belly shadow line
+            // Head
+            pxRect(g, 0, 1, 4, 4, c);
+            px(g, 1, 2, C.EYE); // eye
+            px(g, 2, 2, C.WHITE); // eye highlight
+            px(g, 1, 4, 0xFF8899); // tongue sticking out!
+            // Ear
+            pxRect(g, 0, 0, 2, 2, darker);
+            // Nose
+            px(g, 0, 3, C.BLACK);
+            // Collar
+            pxRect(g, 3, 2, 1, 2, 0xCC3333);
+            // Short legs
+            pxRect(g, 3, 7, 2, 3, c); pxRect(g, 12, 7, 2, 3, c);
+            px(g, 3, 9, darker); px(g, 12, 9, darker); // paw shading
+            // Tail
+            pxRect(g, 15, 1, 1, 3, darker);
+            px(g, 15, 1, c); // tail tip lighter
+        } else if (breed === 'mops') {
+            // Round body
+            pxRect(g, 3, 2, 7, 6, c);
+            pxRect(g, 4, 7, 5, 1, lighter); // belly
+            // Big round head
+            pxRect(g, 0, 1, 4, 5, c);
+            // Wrinkle lines on face
+            px(g, 0, 2, darker); px(g, 3, 2, darker); // forehead wrinkles
+            px(g, 0, 4, darker); px(g, 3, 4, darker); // cheek wrinkles
+            // Big eyes
+            px(g, 1, 2, C.EYE); px(g, 2, 2, C.EYE);
+            px(g, 2, 2, C.WHITE); // eye highlight
+            // Flat nose
+            px(g, 0, 3, C.BLACK); px(g, 1, 3, C.BLACK);
+            // Big tongue
+            px(g, 0, 5, 0xFF8899); px(g, 1, 5, 0xFF8899);
+            // Collar
+            px(g, 3, 3, 0xCC3333); px(g, 3, 4, 0xCC3333);
+            // Legs
+            pxRect(g, 4, 8, 2, 2, c); pxRect(g, 8, 8, 2, 2, c);
+            px(g, 4, 9, darker); px(g, 8, 9, darker); // paw shading
+            // Curly tail (more visible)
+            px(g, 10, 2, darker); px(g, 10, 1, darker); px(g, 11, 1, c);
+        } else if (breed === 'labrador') {
+            // Body
+            pxRect(g, 3, 1, 9, 7, c);
+            // Chest highlight
+            pxRect(g, 3, 3, 2, 3, lighter);
+            pxRect(g, 5, 5, 5, 2, lighter); // belly lighter
+            // Head
+            pxRect(g, 0, 0, 4, 5, c);
+            px(g, 1, 1, C.EYE); // eye
+            px(g, 2, 1, C.WHITE); // eye highlight
+            px(g, 0, 3, C.BLACK); // nose
+            // Floppy ears (bigger)
+            pxRect(g, 0, 0, 2, 1, darker);
+            px(g, 0, 1, darker); // ear hangs down
+            pxRect(g, 3, 0, 1, 2, darker); // other ear
+            // Collar
+            px(g, 3, 1, 0xCC3333); px(g, 3, 2, 0xCC3333);
+            // Legs
+            pxRect(g, 3, 8, 2, 4, c); pxRect(g, 9, 8, 2, 4, c);
+            px(g, 3, 11, darker); px(g, 9, 11, darker); // paw shading
+            // Wagging tail (more detail)
+            pxRect(g, 12, 0, 1, 4, c);
+            px(g, 13, 0, c); // tail tip
+            px(g, 12, 0, lighter); // tail highlight
+        } else if (breed === 'pudel') {
+            // Body with fluffy poof texture
+            pxRect(g, 4, 2, 6, 6, c);
+            // Fluffy top
+            pxRect(g, 3, 1, 8, 2, c);
+            // Lighter and darker puffs for texture
+            px(g, 4, 2, lighter); px(g, 6, 3, lighter); px(g, 8, 2, lighter);
+            px(g, 5, 4, 0xCCCCCC); px(g, 7, 5, 0xCCCCCC); // dark puffs
+            px(g, 9, 3, lighter); px(g, 4, 6, lighter); // more light puffs
+            // Head poof
+            pxRect(g, 0, 1, 4, 4, c);
+            px(g, 0, 1, lighter); px(g, 2, 2, lighter); // head puff highlights
+            px(g, 1, 2, C.EYE);
+            px(g, 2, 2, C.EYE); // second eye visible
+            // Head fluff
+            pxRect(g, 0, 0, 3, 2, c);
+            // Bow on head!
+            px(g, 1, 0, 0xFF66AA); px(g, 2, 0, 0xFF66AA);
+            px(g, 0, 0, 0xFF3388); // bow center
+            // Nose
+            px(g, 0, 3, C.BLACK);
+            // Collar
+            px(g, 3, 3, 0xCC3333); px(g, 3, 4, 0xCC3333);
+            // Long legs
+            pxRect(g, 4, 8, 2, 5, c); pxRect(g, 8, 8, 2, 5, c);
+            // Paw poofs (fluffy)
+            pxRect(g, 4, 12, 3, 1, c); pxRect(g, 8, 12, 3, 1, c);
+            px(g, 5, 12, lighter); px(g, 9, 12, lighter); // poof highlights
+            // Tail poof
+            pxRect(g, 10, 1, 2, 2, c);
+            px(g, 10, 1, lighter); // tail highlight
+        } else { // schafer
+            // Body
+            pxRect(g, 3, 1, 10, 7, c);
+            // Dark saddle on back
+            pxRect(g, 5, 0, 8, 3, 0x222222);
+            // Head
+            pxRect(g, 0, 0, 5, 5, c);
+            // Muzzle detail (lighter tan)
+            pxRect(g, 0, 3, 2, 2, 0xB8860B); // tan muzzle
+            px(g, 0, 3, C.BLACK); // nose
+            px(g, 1, 1, C.EYE);
+            px(g, 2, 1, C.WHITE); // eye highlight
+            // Pointed ears (more prominent)
+            pxRect(g, 0, 0, 2, 1, 0x222222); // ear left
+            pxRect(g, 3, 0, 2, 1, 0x222222); // ear right
+            px(g, 0, 0, 0x333333); px(g, 4, 0, 0x333333); // ear inner
+            // Collar
+            px(g, 3, 2, 0xCC3333); px(g, 3, 3, 0xCC3333);
+            // Tan legs
+            pxRect(g, 4, 8, 2, 5, 0xB8860B); pxRect(g, 11, 8, 2, 5, 0xB8860B);
+            px(g, 4, 12, darker); px(g, 11, 12, darker); // paw shading
+            // Bushy tail
+            pxRect(g, 13, 3, 2, 3, c); pxRect(g, 14, 5, 1, 3, c);
+            px(g, 13, 3, 0x222222); // dark tail top
+            px(g, 14, 7, lighter); // tail tip
+        }
+    }
+
+    DOG_BREEDS.forEach(info => {
+        // Run frame 1
+        genTex(scene, info.breed + '_run_0', info.w, info.h + 4, g => drawDog(g, info.breed));
+        // Run frame 2 (slightly different leg positions - handled via y-offset in game)
+        genTex(scene, info.breed + '_run_1', info.w, info.h + 4, g => drawDog(g, info.breed));
+        // Poop frame
+        genTex(scene, info.breed + '_poop', info.w, info.h + 4, g => {
+            drawDog(g, info.breed);
+            // Squatting: lower body slightly
+            pxRect(g, Math.floor(info.w/2)-1, info.h+1, 3, 2, C.POOP); // poop coming out
+        });
+    });
+
+    // --- POOP ---
+    genTex(scene, 'poop_small', 6, 6, g => {
+        // Classic swirl shape
+        pxRect(g, 1, 4, 4, 1, C.POOP); // base
+        pxRect(g, 1, 3, 4, 1, C.POOP); // middle
+        pxRect(g, 2, 2, 2, 1, C.POOP); // upper
+        px(g, 3, 1, C.POOP); // tip of swirl
+        px(g, 2, 1, C.POOP_L); // swirl curve
+        // Shadow at bottom
+        px(g, 0, 5, 0x4A2008); px(g, 1, 5, 0x4A2008); px(g, 2, 5, 0x4A2008);
+        px(g, 3, 5, 0x4A2008); px(g, 4, 5, 0x4A2008);
+        // Highlight on top
+        px(g, 3, 1, C.POOP_L); px(g, 4, 2, C.POOP_L);
+        // Side shading
+        px(g, 0, 3, C.POOP_L); px(g, 5, 3, 0x4A2008);
+    });
+    genTex(scene, 'poop_big', 8, 8, g => {
+        // Bigger swirl
+        pxRect(g, 1, 6, 6, 1, C.POOP); // base wide
+        pxRect(g, 1, 5, 6, 1, C.POOP); // base
+        pxRect(g, 2, 4, 4, 1, C.POOP); // mid
+        pxRect(g, 2, 3, 4, 1, C.POOP); // upper mid
+        pxRect(g, 3, 2, 2, 1, C.POOP); // upper
+        px(g, 4, 1, C.POOP); px(g, 3, 1, C.POOP_L); // tip
+        // Swirl detail
+        px(g, 2, 4, C.POOP_L); px(g, 5, 3, C.POOP_L); // lighter swirl lines
+        // Shadow at bottom
+        pxRect(g, 0, 7, 8, 1, 0x4A2008);
+        px(g, 0, 6, 0x4A2008); px(g, 7, 6, 0x4A2008);
+        // Highlight
+        px(g, 5, 2, C.POOP_L); px(g, 6, 4, C.POOP_L);
+        // Flies buzzing around
+        px(g, 0, 0, C.BLACK); px(g, 7, 1, C.BLACK); px(g, 1, 1, C.BLACK);
+    });
+    genTex(scene, 'poop_gold', 8, 8, g => {
+        // Gold swirl
+        pxRect(g, 1, 6, 6, 1, C.POOP_GOLD); // base
+        pxRect(g, 1, 5, 6, 1, C.POOP_GOLD);
+        pxRect(g, 2, 4, 4, 1, C.POOP_GOLD);
+        pxRect(g, 2, 3, 4, 1, C.POOP_GOLD);
+        pxRect(g, 3, 2, 2, 1, C.POOP_GOLD);
+        px(g, 4, 1, 0xFFF8DC); px(g, 3, 1, 0xFFF8DC); // golden tip
+        // Dark gold shadow
+        px(g, 0, 7, 0xB8860B); px(g, 7, 7, 0xB8860B);
+        px(g, 0, 6, 0xB8860B); px(g, 7, 6, 0xB8860B);
+        // Sparkle highlights
+        px(g, 6, 0, C.WHITE); px(g, 1, 2, C.WHITE);
+        px(g, 7, 3, C.WHITE); px(g, 0, 1, C.WHITE);
+        // Glowing highlight pixels
+        px(g, 3, 3, 0xFFF8DC); px(g, 5, 5, 0xFFF8DC);
+        px(g, 2, 5, 0xFFEC80); px(g, 5, 2, 0xFFEC80);
+    });
+
+    // --- STEAM PARTICLES ---
+    genTex(scene, 'steam', 3, 3, g => {
+        // More wispy, varied shape
+        px(g, 1, 0, 0xBBBBBB); px(g, 0, 1, 0x999999); px(g, 2, 1, 0xAAAAAA);
+        px(g, 1, 2, 0x888888); px(g, 1, 1, 0xCCCCCC); // center brighter
+    });
+    // Sparkle - 4-pointed star shape
+    genTex(scene, 'sparkle', 3, 3, g => {
+        px(g, 1, 0, C.GOLD); px(g, 0, 1, C.GOLD); px(g, 2, 1, C.GOLD); px(g, 1, 2, C.GOLD);
+        px(g, 1, 1, C.WHITE); // bright center
+    });
+
+    // --- OBSTACLES ---
+    // Puddle - reflection highlights, ripple effect
+    genTex(scene, 'puddle', 16, 4, g => {
+        // Base water
+        pxRect(g, 2, 1, 12, 2, 0x4488CC);
+        pxRect(g, 4, 0, 8, 1, 0x5599DD); // top edge lighter
+        pxRect(g, 3, 3, 10, 1, 0x3377BB); // bottom darker
+        px(g, 0, 2, 0x3377BB); px(g, 1, 2, 0x4488CC);
+        px(g, 14, 2, 0x4488CC); px(g, 15, 2, 0x3377BB);
+        // Reflection highlights
+        px(g, 5, 1, 0x88CCEE); px(g, 6, 1, 0xAADDFF); // bright reflection
+        px(g, 10, 1, 0x88CCEE);
+        // Ripple rings
+        px(g, 3, 2, 0x5599DD); px(g, 8, 1, 0x5599DD);
+        px(g, 12, 2, 0x5599DD);
+    });
+    // Hole - cracked edges, depth gradient
+    genTex(scene, 'hole', 14, 6, g => {
+        // Cracked edge border
+        pxRect(g, 0, 0, 14, 1, 0x777777);
+        px(g, 2, 0, 0x555555); px(g, 5, 0, 0x999999); px(g, 9, 0, 0x555555); px(g, 12, 0, 0x999999);
+        // Depth gradient - darker toward center
+        pxRect(g, 1, 1, 12, 1, 0x333333);
+        pxRect(g, 1, 2, 12, 1, 0x222222);
+        pxRect(g, 2, 3, 10, 2, 0x111111);
+        pxRect(g, 3, 4, 8, 1, 0x080808); // deepest
+        // Crack lines extending from hole
+        px(g, 0, 1, 0x666666); px(g, 13, 1, 0x666666);
+        pxRect(g, 1, 5, 12, 1, 0x333333); // bottom lip
+    });
+    // Bicycle - spokes, pedals, basket, detailed frame
+    genTex(scene, 'bicycle', 14, 16, g => {
+        // Wheels (rim + spokes)
+        pxRect(g, 0, 10, 6, 6, 0x333333); // rear wheel outer
+        pxRect(g, 1, 11, 4, 4, 0x555555); // rear wheel inner
+        px(g, 2, 13, 0x888888); px(g, 3, 12, 0x888888); // rear spokes
+        px(g, 2, 11, 0x888888); px(g, 4, 13, 0x888888);
+        pxRect(g, 8, 10, 6, 6, 0x333333); // front wheel outer
+        pxRect(g, 9, 11, 4, 4, 0x555555); // front wheel inner
+        px(g, 10, 13, 0x888888); px(g, 11, 12, 0x888888); // front spokes
+        px(g, 10, 11, 0x888888); px(g, 12, 13, 0x888888);
+        // Hub centers
+        px(g, 2, 12, C.WHITE); px(g, 10, 12, C.WHITE);
+        // Frame
+        pxRect(g, 3, 6, 8, 1, 0xCC3333); // main bar
+        pxRect(g, 5, 3, 1, 4, 0xCC3333); // seat tube
+        pxRect(g, 9, 4, 1, 6, 0xCC3333); // head tube
+        pxRect(g, 3, 7, 1, 3, 0xCC3333); // rear stay
+        // Handlebar
+        pxRect(g, 10, 2, 3, 1, 0x333333); px(g, 10, 3, 0x333333);
+        // Basket
+        pxRect(g, 11, 3, 3, 3, 0xBB9966); px(g, 12, 4, 0xAA8855);
+        // Seat
+        pxRect(g, 4, 1, 3, 1, 0x333333); px(g, 5, 2, 0x444444);
+        // Pedals
+        px(g, 6, 8, 0x666666); px(g, 7, 9, 0x666666);
+    });
+    // Construction barrier - warning stripes, lights on top
+    genTex(scene, 'barrier', 16, 14, g => {
+        // Posts
+        pxRect(g, 0, 0, 2, 14, 0x888888); pxRect(g, 14, 0, 2, 14, 0x888888);
+        px(g, 0, 0, 0x999999); px(g, 14, 0, 0x999999); // post highlights
+        // Warning lights on top
+        px(g, 0, 0, 0xFFAA00); px(g, 15, 0, 0xFFAA00);
+        px(g, 1, 0, 0xFFCC44); px(g, 14, 0, 0xFFCC44); // light glow
+        // Upper bar with diagonal stripes
+        pxRect(g, 1, 4, 14, 2, 0xFF6600);
+        px(g, 2, 4, C.WHITE); px(g, 4, 4, C.WHITE); px(g, 6, 4, C.WHITE);
+        px(g, 8, 4, C.WHITE); px(g, 10, 4, C.WHITE); px(g, 12, 4, C.WHITE);
+        px(g, 3, 5, C.WHITE); px(g, 5, 5, C.WHITE); px(g, 7, 5, C.WHITE);
+        px(g, 9, 5, C.WHITE); px(g, 11, 5, C.WHITE); px(g, 13, 5, C.WHITE);
+        // Lower bar with diagonal stripes
+        pxRect(g, 1, 8, 14, 2, C.WHITE);
+        px(g, 2, 8, 0xFF6600); px(g, 4, 8, 0xFF6600); px(g, 6, 8, 0xFF6600);
+        px(g, 8, 8, 0xFF6600); px(g, 10, 8, 0xFF6600); px(g, 12, 8, 0xFF6600);
+        px(g, 3, 9, 0xFF6600); px(g, 5, 9, 0xFF6600); px(g, 7, 9, 0xFF6600);
+        px(g, 9, 9, 0xFF6600); px(g, 11, 9, 0xFF6600); px(g, 13, 9, 0xFF6600);
+    });
+    // Car - chrome bumper, mirror, detailed windows
+    genTex(scene, 'car', 24, 12, g => {
+        const cc = [0xCC3333, 0x3366CC, 0x33AA33, 0xCCCC33][Math.floor(Math.random()*4)];
+        const cdc = Phaser.Display.Color.IntegerToColor(cc);
+        const carDarker = Phaser.Display.Color.GetColor(
+            Math.max(0, cdc.red - 30), Math.max(0, cdc.green - 30), Math.max(0, cdc.blue - 30)
+        );
+        // Body
+        pxRect(g, 2, 4, 20, 6, cc);
+        // Body shading (darker bottom)
+        pxRect(g, 2, 8, 20, 2, carDarker);
+        // Roof/window frame
+        pxRect(g, 5, 1, 12, 4, 0x88CCFF);
+        // Window pillars
+        px(g, 5, 1, cc); px(g, 5, 2, cc); px(g, 5, 3, cc);
+        px(g, 10, 1, cc); px(g, 10, 2, cc); px(g, 10, 3, cc); // center pillar
+        px(g, 16, 1, cc); px(g, 16, 2, cc); px(g, 16, 3, cc);
+        // Windows with reflection
+        pxRect(g, 6, 2, 4, 2, 0xAADDFF);
+        px(g, 7, 2, 0xCCEEFF); // front window reflection
+        pxRect(g, 11, 2, 5, 2, 0xAADDFF);
+        px(g, 12, 2, 0xCCEEFF); // rear window reflection
+        // Chrome bumper
+        pxRect(g, 1, 9, 22, 1, 0xCCCCCC);
+        px(g, 2, 9, 0xEEEEEE); px(g, 22, 9, 0xEEEEEE);
+        // Side mirror
+        px(g, 4, 4, 0x666666); px(g, 4, 5, 0x666666);
+        // Wheels with hubcap
+        pxRect(g, 2, 10, 5, 2, 0x333333); pxRect(g, 17, 10, 5, 2, 0x333333);
+        px(g, 4, 10, 0x666666); px(g, 19, 10, 0x666666); // hubcap
+        // Lights
+        px(g, 0, 5, 0xFFFF00); px(g, 0, 6, 0xFFFF00); px(g, 1, 5, 0xFFEE88); // headlights
+        px(g, 23, 5, 0xFF0000); px(g, 23, 6, 0xFF0000); px(g, 22, 5, 0xFF4444); // taillights
+    });
+    // Traffic light
+    genTex(scene, 'traffic_light', 6, 20, g => {
+        pxRect(g, 2, 8, 2, 12, 0x555555); // pole
+        px(g, 2, 8, 0x666666); // pole highlight
+        pxRect(g, 0, 0, 6, 10, 0x333333); // box
+        px(g, 0, 0, 0x444444); px(g, 5, 0, 0x222222); // box shading
+        pxRect(g, 1, 1, 4, 2, 0xFF0000); // red
+        px(g, 2, 1, 0xFF4444); // red glow
+        pxRect(g, 1, 4, 4, 2, 0xFFAA00); // yellow
+        px(g, 2, 4, 0xFFCC44); // yellow glow
+        pxRect(g, 1, 7, 4, 2, 0x00CC00); // green
+        px(g, 2, 7, 0x44EE44); // green glow
+    });
+
+    // --- NPCs ---
+    // Oma (arm raised, pan is separate sprite)
+    genTex(scene, 'oma', 13, 20, g => {
+        // Gray hair with bun
+        pxRect(g, 3, 0, 7, 3, 0xCCCCCC);
+        pxRect(g, 2, 1, 9, 3, 0xCCCCCC);
+        // Hair bun on top
+        pxRect(g, 5, 0, 3, 1, 0xBBBBBB);
+        px(g, 6, 0, 0xDDDDDD); // bun highlight
+        // Face
+        pxRect(g, 3, 3, 7, 5, C.SKIN);
+        // Glasses (two circle pixels)
+        px(g, 3, 4, 0x666666); px(g, 4, 4, 0x88CCFF); px(g, 5, 4, 0x666666); // left lens
+        px(g, 6, 4, 0x666666); // bridge
+        px(g, 7, 4, 0x666666); px(g, 8, 4, 0x88CCFF); px(g, 9, 4, 0x666666); // right lens
+        // Angry eyes behind glasses
+        px(g, 4, 4, C.EYE); px(g, 8, 4, C.EYE);
+        // Angry eyebrows (V-shaped)
+        px(g, 3, 3, C.EYE); px(g, 5, 3, C.EYE); // left brow angled
+        px(g, 7, 3, C.EYE); px(g, 9, 3, C.EYE); // right brow angled
+        // Angrier frowning mouth
+        px(g, 5, 6, C.RED); px(g, 6, 6, C.RED); px(g, 7, 6, C.RED);
+        px(g, 4, 6, C.RED); px(g, 8, 6, C.RED); // wider frown
+        px(g, 5, 7, 0xEEC090); px(g, 7, 7, 0xEEC090); // chin shading
+        // Purple dress
+        pxRect(g, 3, 8, 7, 6, 0x663399);
+        // Apron over dress
+        pxRect(g, 4, 9, 5, 5, C.WHITE);
+        px(g, 5, 9, 0xEEEEEE); px(g, 7, 11, 0xEEEEEE); // apron folds
+        // Dress details
+        px(g, 3, 8, 0x552288); px(g, 9, 8, 0x552288); // shoulder shading
+        // Left arm
+        pxRect(g, 2, 9, 1, 3, 0x663399);
+        px(g, 2, 11, C.SKIN); // hand showing
+        // Right arm raised up
+        pxRect(g, 10, 8, 1, 1, 0x663399); // shoulder
+        pxRect(g, 10, 4, 1, 4, C.SKIN); // arm going up
+        pxRect(g, 10, 2, 1, 2, C.SKIN); // hand up high
+        // Legs (dress/skirt)
+        pxRect(g, 3, 14, 3, 4, 0x663399); pxRect(g, 7, 14, 3, 4, 0x663399);
+        px(g, 3, 14, 0x552288); px(g, 7, 14, 0x552288); // skirt shadow
+        // Shoes
+        pxRect(g, 3, 18, 3, 2, C.BLACK); pxRect(g, 7, 18, 3, 2, C.BLACK);
+        px(g, 4, 18, 0x333333); px(g, 8, 18, 0x333333); // shoe highlight
+    });
+    // Bratpfanne (separate sprite)
+    genTex(scene, 'pan', 10, 12, g => {
+        pxRect(g, 4, 6, 2, 6, 0x664422); // wooden handle
+        px(g, 4, 6, 0x775533); // handle highlight
+        pxRect(g, 1, 0, 8, 5, 0x666666); // pan head
+        pxRect(g, 2, 1, 6, 3, 0x888888); // pan inner highlight
+        px(g, 3, 2, 0x999999); px(g, 5, 2, 0x999999); // reflections
+        px(g, 0, 2, 0x555555); px(g, 9, 2, 0x555555); // rim
+        px(g, 1, 4, 0x555555); px(g, 8, 4, 0x555555); // rim bottom edge
+    });
+    // Ordnungsamt
+    genTex(scene, 'ordnungsamt', 13, 20, g => {
+        // Hat with badge
+        pxRect(g, 3, 0, 7, 2, 0x333366);
+        pxRect(g, 2, 1, 9, 1, 0x333366);
+        px(g, 6, 0, C.GOLD); // gold badge on cap
+        px(g, 2, 1, 0x222244); px(g, 10, 1, 0x222244); // hat brim shading
+        // Face
+        pxRect(g, 3, 2, 7, 5, C.SKIN);
+        // Stern eyes with frown
+        px(g, 4, 3, C.EYE); px(g, 8, 3, C.EYE);
+        px(g, 5, 3, C.WHITE); px(g, 9, 3, C.WHITE); // eye whites
+        // Stern eyebrows (frown)
+        px(g, 3, 2, C.EYE); px(g, 5, 2, C.EYE); // left brow
+        px(g, 7, 2, C.EYE); px(g, 9, 2, C.EYE); // right brow
+        // Mustache
+        px(g, 5, 5, C.BLACK); px(g, 6, 5, C.BLACK); px(g, 7, 5, C.BLACK);
+        // Stern mouth (straight line)
+        px(g, 5, 6, C.MOUTH); px(g, 6, 6, C.MOUTH); px(g, 7, 6, C.MOUTH);
+        // Uniform
+        pxRect(g, 3, 7, 7, 6, 0x333366);
+        // Tie
+        px(g, 6, 7, C.BLACK); px(g, 6, 8, C.BLACK); px(g, 6, 9, C.BLACK);
+        // Belt
+        pxRect(g, 3, 10, 7, 1, C.BLACK);
+        px(g, 6, 10, C.GOLD); // belt buckle
+        // Uniform buttons
+        px(g, 5, 8, C.GOLD); px(g, 7, 8, C.GOLD);
+        // Left arm
+        pxRect(g, 2, 8, 1, 3, 0x333366);
+        // Right arm with clipboard
+        pxRect(g, 10, 8, 2, 3, C.SKIN); // clipboard arm
+        pxRect(g, 10, 11, 3, 3, C.WHITE); // clipboard
+        px(g, 10, 11, 0xDDDDDD); // clipboard shadow
+        pxRect(g, 11, 12, 1, 1, C.BLACK); // writing
+        px(g, 11, 11, C.RED); // red header on ticket
+        // Legs
+        pxRect(g, 3, 13, 3, 5, 0x333366); pxRect(g, 7, 13, 3, 5, 0x333366);
+        px(g, 3, 13, 0x222244); px(g, 7, 13, 0x222244); // pant crease
+        // Shoes
+        pxRect(g, 3, 18, 3, 2, C.BLACK); pxRect(g, 7, 18, 3, 2, C.BLACK);
+        px(g, 4, 18, 0x333333); px(g, 8, 18, 0x333333); // shoe shine
+    });
+    // Cat - whiskers, tiger stripes, fluffy tail
+    genTex(scene, 'cat', 12, 10, g => {
+        // Body with tiger stripes
+        pxRect(g, 3, 2, 7, 5, 0xFF8833);
+        px(g, 4, 2, 0xDD6622); px(g, 6, 3, 0xDD6622); px(g, 8, 2, 0xDD6622); // dark stripes
+        px(g, 5, 4, 0xDD6622); px(g, 7, 5, 0xDD6622); // more stripes
+        px(g, 4, 5, 0xFFAA55); px(g, 6, 6, 0xFFAA55); // belly lighter
+        // Head
+        pxRect(g, 0, 1, 4, 4, 0xFF8833);
+        px(g, 1, 1, 0xDD6622); px(g, 3, 2, 0xDD6622); // head stripes
+        // Ears (pointed)
+        px(g, 0, 0, 0xFF8833); px(g, 3, 0, 0xFF8833);
+        px(g, 0, 0, 0xFF6622); px(g, 3, 0, 0xFF6622); // ear inner
+        // Green eyes
+        px(g, 1, 2, 0x33CC33); px(g, 2, 2, 0x33CC33);
+        px(g, 1, 2, 0x22AA22); // pupil darker
+        // Nose
+        px(g, 1, 3, 0xFF6688);
+        // Whiskers (thin lines)
+        px(g, 0, 3, 0xFFCCAA); px(g, 0, 4, 0xFFCCAA); // left whiskers
+        px(g, 3, 3, 0xFFCCAA); px(g, 3, 4, 0xFFCCAA); // right whiskers
+        // Legs
+        pxRect(g, 3, 7, 2, 3, 0xFF8833); pxRect(g, 7, 7, 2, 3, 0xFF8833);
+        px(g, 3, 9, 0xFFAA55); px(g, 7, 9, 0xFFAA55); // paw pads
+        // Fluffy tail (curled up, thicker)
+        pxRect(g, 10, 1, 2, 1, 0xFF8833);
+        pxRect(g, 11, 2, 1, 2, 0xFF8833);
+        px(g, 10, 1, 0xDD6622); // stripe on tail
+        px(g, 11, 3, 0xFFAA55); // tail tip
+    });
+    // Strange dog - teeth, angry eyebrows, drool
+    genTex(scene, 'strange_dog', 14, 12, g => {
+        // Body
+        pxRect(g, 3, 1, 8, 6, 0x996633);
+        pxRect(g, 4, 5, 6, 2, 0x886622); // belly shading
+        // Head
+        pxRect(g, 0, 0, 4, 5, 0x996633);
+        // Angry eyebrows
+        px(g, 0, 0, C.BLACK); px(g, 2, 0, C.BLACK); // V brows
+        // Eye (angry, red-ish)
+        px(g, 1, 1, 0xCC3333); px(g, 2, 1, C.EYE);
+        // Open mouth with teeth
+        pxRect(g, 0, 3, 2, 2, C.RED); // open mouth
+        px(g, 0, 3, C.WHITE); px(g, 1, 3, C.WHITE); // teeth row
+        px(g, 0, 4, C.WHITE); // bottom teeth
+        // Drool
+        px(g, 0, 5, 0x88BBDD); px(g, 1, 5, 0x88BBDD);
+        // Nose
+        px(g, 0, 2, C.BLACK);
+        // Ears (raised/alert)
+        px(g, 0, 0, 0x774422); px(g, 3, 0, 0x774422);
+        // Legs
+        pxRect(g, 4, 7, 2, 5, 0x996633); pxRect(g, 9, 7, 2, 5, 0x996633);
+        px(g, 4, 11, 0x774422); px(g, 9, 11, 0x774422); // paw shading
+        // Tail (bristled/raised)
+        pxRect(g, 11, 0, 1, 4, 0x996633);
+        px(g, 12, 0, 0x996633); px(g, 12, 1, 0x774422); // bushy tail
+    });
+
+    // --- STRAFZETTEL (ticket) ---
+    genTex(scene, 'ticket', 8, 10, g => {
+        // Paper background
+        pxRect(g, 0, 0, 8, 10, C.WHITE);
+        pxRect(g, 0, 0, 8, 1, 0xEEEEEE); // top edge shadow
+        px(g, 7, 0, 0xDDDDDD); px(g, 7, 9, 0xDDDDDD); // corner folds
+        // "STRAFE" header in red pixels
+        pxRect(g, 1, 1, 6, 1, C.RED);
+        px(g, 1, 1, 0xFF4444); px(g, 3, 1, 0xFF4444); px(g, 5, 1, 0xFF4444); // text hint
+        // Text lines
+        pxRect(g, 1, 3, 5, 1, C.BLACK); pxRect(g, 1, 5, 4, 1, C.BLACK);
+        pxRect(g, 1, 7, 5, 1, C.BLACK);
+        // Stamp mark (red circle hint)
+        px(g, 5, 7, C.RED); px(g, 6, 7, C.RED);
+        px(g, 5, 8, C.RED); px(g, 6, 8, C.RED);
+    });
+
+    // --- COIN ---
+    genTex(scene, 'coin', 6, 6, g => {
+        // Coin shape
+        pxRect(g, 1, 0, 4, 1, C.GOLD); pxRect(g, 0, 1, 6, 4, C.GOLD);
+        pxRect(g, 1, 5, 4, 1, C.GOLD);
+        // Euro symbol attempt (dark inner)
+        px(g, 2, 1, 0xB8860B); px(g, 3, 1, 0xB8860B);
+        px(g, 1, 2, 0xB8860B); px(g, 2, 2, 0xB8860B); px(g, 3, 2, 0xB8860B);
+        px(g, 1, 3, 0xB8860B); px(g, 2, 3, 0xB8860B);
+        px(g, 2, 4, 0xB8860B); px(g, 3, 4, 0xB8860B);
+        // Shine highlight
+        px(g, 1, 0, 0xFFEC80); px(g, 0, 1, 0xFFEC80);
+        px(g, 4, 4, 0x997711); px(g, 5, 4, 0x997711); // shadow edge
+    });
+
+    // --- BAG (Tute) ---
+    genTex(scene, 'bag', 6, 8, g => {
+        // Bag body
+        pxRect(g, 0, 2, 6, 6, 0x228822);
+        // Bag shading
+        px(g, 0, 2, 0x1A6618); px(g, 0, 3, 0x1A6618); // left shadow
+        px(g, 5, 6, 0x1A6618); px(g, 5, 7, 0x1A6618); // right shadow
+        // Drawstring top
+        pxRect(g, 1, 0, 4, 1, 0x228822);
+        px(g, 2, 1, 0x228822); px(g, 3, 1, 0x228822); // cinched top
+        px(g, 1, 1, 0x44AA44); px(g, 4, 1, 0x44AA44); // drawstring ties
+        // Recycling symbol hint (lighter arrows)
+        px(g, 2, 4, 0x44AA44); px(g, 3, 4, 0x44AA44);
+        px(g, 2, 5, 0x44AA44); px(g, 3, 5, 0x44AA44);
+        px(g, 3, 3, 0x44AA44); px(g, 2, 6, 0x44AA44); // arrow hints
+    });
+
+    // --- BACKGROUND ELEMENTS ---
+    // House - chimney, flower box, doorknob, varied roof, gutter
+    genTex(scene, 'house', 30, 30, g => {
+        const hc = [0xCC8866, 0xAAAA88, 0xBBBB99, 0xDDAA77][Math.floor(Math.random()*4)];
+        const hdc = Phaser.Display.Color.IntegerToColor(hc);
+        const wallDarker = Phaser.Display.Color.GetColor(
+            Math.max(0, hdc.red - 20), Math.max(0, hdc.green - 20), Math.max(0, hdc.blue - 20)
+        );
+        // Wall
+        pxRect(g, 2, 10, 26, 20, hc);
+        // Brick texture hints
+        px(g, 4, 12, wallDarker); px(g, 10, 15, wallDarker); px(g, 18, 13, wallDarker);
+        px(g, 24, 17, wallDarker); px(g, 8, 22, wallDarker); px(g, 20, 25, wallDarker);
+        // Roof with varied tiles
+        pxRect(g, 0, 8, 30, 3, 0x883333);
+        pxRect(g, 8, 6, 14, 3, 0x883333); // roof peak
+        // Varied roof tile colors
+        px(g, 2, 8, 0x993344); px(g, 6, 8, 0x772222); px(g, 10, 8, 0x993344);
+        px(g, 14, 8, 0x772222); px(g, 18, 8, 0x993344); px(g, 22, 8, 0x772222);
+        px(g, 26, 8, 0x993344);
+        px(g, 10, 6, 0x993344); px(g, 14, 6, 0x772222); px(g, 18, 6, 0x993344);
+        // Gutter
+        pxRect(g, 0, 10, 30, 1, 0x888888);
+        // Chimney
+        pxRect(g, 22, 4, 3, 5, 0x884433);
+        px(g, 22, 4, 0x996644); px(g, 24, 4, 0x773322); // chimney shading
+        // Door
+        pxRect(g, 12, 20, 6, 10, 0x664422);
+        px(g, 13, 20, 0x775533); // door highlight
+        px(g, 16, 25, C.GOLD); // doorknob
+        px(g, 12, 20, 0x553311); px(g, 17, 20, 0x553311); // door frame
+        // Windows with frames
+        pxRect(g, 5, 14, 5, 4, 0x88CCFF); pxRect(g, 20, 14, 5, 4, 0x88CCFF);
+        // Window frames
+        px(g, 7, 14, 0x664422); px(g, 7, 15, 0x664422); px(g, 7, 16, 0x664422); px(g, 7, 17, 0x664422);
+        px(g, 22, 14, 0x664422); px(g, 22, 15, 0x664422); px(g, 22, 16, 0x664422); px(g, 22, 17, 0x664422);
+        // Window shine
+        px(g, 6, 14, C.WHITE); px(g, 21, 14, C.WHITE);
+        // Flower boxes under windows
+        pxRect(g, 5, 18, 5, 1, 0x664422); pxRect(g, 20, 18, 5, 1, 0x664422);
+        px(g, 6, 17, 0xFF6688); px(g, 8, 17, 0xFFAA33); // flowers left
+        px(g, 21, 17, 0xFF6688); px(g, 23, 17, 0xFFAA33); // flowers right
+    });
+    // Tree - bark texture, branches, fruit
+    genTex(scene, 'tree', 14, 24, g => {
+        // Trunk with bark texture
+        pxRect(g, 5, 14, 4, 10, 0x664422);
+        px(g, 5, 15, 0x553311); px(g, 7, 17, 0x553311); px(g, 6, 20, 0x553311); // bark lines
+        px(g, 8, 16, 0x775533); px(g, 6, 19, 0x775533); // bark highlights
+        // Branches
+        px(g, 4, 14, 0x664422); px(g, 9, 13, 0x664422);
+        px(g, 3, 12, 0x664422); px(g, 10, 12, 0x664422);
+        // Foliage layers (dark to light)
+        pxRect(g, 1, 2, 12, 8, 0x338833); // base dark
+        pxRect(g, 3, 0, 8, 4, 0x338833);
+        pxRect(g, 2, 8, 10, 4, 0x44AA44); // lighter bottom
+        // Lighter foliage patches
+        px(g, 4, 4, 0x55BB55); px(g, 8, 6, 0x55BB55);
+        px(g, 3, 2, 0x55BB55); px(g, 10, 5, 0x55BB55);
+        px(g, 6, 1, 0x55BB55); px(g, 9, 3, 0x55BB55);
+        // Dark depth patches
+        px(g, 5, 5, 0x226622); px(g, 7, 3, 0x226622); px(g, 2, 7, 0x226622);
+        // Fruit/apples
+        px(g, 3, 6, 0xFF4444); px(g, 9, 4, 0xFF4444);
+        px(g, 6, 8, 0xFF6666); // lighter apple
+    });
+    // Bush - flowers, layered shading
+    genTex(scene, 'bush', 10, 8, g => {
+        // Base dark green
+        pxRect(g, 1, 2, 8, 6, 0x338833);
+        // Lighter middle layer
+        pxRect(g, 0, 4, 10, 3, 0x44AA44);
+        // Top layer
+        pxRect(g, 2, 0, 6, 3, 0x44AA44);
+        // Highlight patches
+        px(g, 3, 1, 0x55BB55); px(g, 7, 3, 0x55BB55);
+        px(g, 1, 5, 0x55BB55); px(g, 8, 4, 0x55BB55);
+        // Dark depth
+        px(g, 4, 4, 0x226622); px(g, 6, 6, 0x226622);
+        // Small flowers
+        px(g, 2, 2, 0xFF88AA); px(g, 6, 1, 0xFFDD44); // pink and yellow
+        px(g, 8, 5, 0xFF88AA); px(g, 4, 6, 0xFFDD44);
+    });
+    // Cloud - more billowy, shadow underneath
+    genTex(scene, 'cloud', 18, 8, g => {
+        // Shadow underneath (subtle blue-grey)
+        pxRect(g, 1, 6, 16, 2, 0xDDDDEE);
+        pxRect(g, 3, 5, 12, 1, 0xDDDDEE);
+        // Main cloud body
+        pxRect(g, 2, 2, 14, 4, C.WHITE);
+        pxRect(g, 0, 4, 18, 2, C.WHITE);
+        // Billowy top bumps
+        pxRect(g, 4, 0, 4, 3, C.WHITE); // left bump
+        pxRect(g, 9, 1, 4, 2, C.WHITE); // middle bump
+        pxRect(g, 13, 1, 3, 2, C.WHITE); // right bump
+        // Highlight on top
+        px(g, 5, 0, 0xFFFFFF); px(g, 10, 1, 0xFFFFFF);
+        // Subtle shading inside
+        px(g, 3, 5, 0xEEEEFF); px(g, 12, 5, 0xEEEEFF);
+    });
+    // Thick fog cloud (big, dense, covers gameplay area)
+    genTex(scene, 'fog_cloud', 40, 20, g => {
+        pxRect(g, 4, 6, 32, 10, 0xCCCCCC);
+        pxRect(g, 2, 8, 36, 8, 0xBBBBBB);
+        pxRect(g, 0, 10, 40, 6, 0xCCCCCC);
+        pxRect(g, 6, 4, 28, 4, 0xDDDDDD);
+        pxRect(g, 10, 2, 20, 4, 0xCCCCCC);
+        pxRect(g, 8, 14, 24, 4, 0xBBBBBB);
+        pxRect(g, 14, 0, 12, 3, 0xDDDDDD);
+        // Extra wispy edges
+        px(g, 1, 9, 0xDDDDDD); px(g, 38, 11, 0xDDDDDD);
+        px(g, 3, 7, 0xDDDDDD); px(g, 36, 13, 0xDDDDDD);
+    });
+    // Fence - wood grain, nail heads
+    genTex(scene, 'fence', 16, 10, g => {
+        // Rails
+        pxRect(g, 0, 3, 16, 2, 0xCCAA77); pxRect(g, 0, 7, 16, 2, 0xCCAA77);
+        // Rail wood grain
+        px(g, 3, 3, 0xBB9966); px(g, 7, 3, 0xBB9966); px(g, 11, 3, 0xBB9966);
+        px(g, 5, 7, 0xBB9966); px(g, 9, 7, 0xBB9966); px(g, 13, 7, 0xBB9966);
+        // Posts with grain
+        for (let i = 0; i < 16; i += 4) {
+            pxRect(g, i, 0, 2, 10, 0xBB9966); // posts
+            // Wood grain on posts
+            px(g, i, 2, 0xAA8855); px(g, i, 6, 0xAA8855);
+            px(g, i+1, 4, 0xCCBB88); // lighter grain
+            // Nail heads
+            px(g, i+1, 3, 0x666666); px(g, i+1, 7, 0x666666);
+        }
+        // Post tops (pointed)
+        for (let i = 0; i < 16; i += 4) {
+            px(g, i, 0, 0xCCBB88); // lighter post tip
+        }
+    });
+
+    // Rain drop - tear-drop shape
+    genTex(scene, 'raindrop', 1, 3, g => {
+        px(g, 0, 0, 0x4466AA); // narrow top (darker)
+        px(g, 0, 1, 0x6688CC); // middle
+        px(g, 0, 2, 0x99BBEE); // wider bottom (lighter, bulge)
+    });
+    // Snow flake - 6-pointed crystal in 2x2
+    genTex(scene, 'snowflake', 2, 2, g => {
+        px(g, 0, 0, C.WHITE); px(g, 1, 0, 0xDDEEFF);
+        px(g, 0, 1, 0xDDEEFF); px(g, 1, 1, C.WHITE);
+    });
+
+    // Ground tiles with texture
+    genTex(scene, 'sidewalk_tile', 20, 4, g => {
+        pxRect(g, 0, 0, 20, 4, C.SIDEWALK);
+        // Top highlight
+        pxRect(g, 0, 0, 20, 1, 0xCCCCCC);
+        // Tile pattern - crack lines
+        px(g, 0, 1, 0xAAAAAA); px(g, 0, 2, 0xAAAAAA); px(g, 0, 3, 0xAAAAAA); // left grout
+        px(g, 10, 1, 0xAAAAAA); px(g, 10, 2, 0xAAAAAA); px(g, 10, 3, 0xAAAAAA); // mid grout
+        px(g, 19, 1, 0xAAAAAA); // right grout
+        // Crack detail
+        px(g, 5, 2, 0xA5A5A5); px(g, 6, 3, 0xA5A5A5); // diagonal crack
+        px(g, 15, 1, 0xA5A5A5); // small crack
+        // Varied grey tones
+        px(g, 3, 1, 0xC0C0C0); px(g, 7, 2, 0xC5C5C5); px(g, 14, 1, 0xBABABA);
+    });
+    genTex(scene, 'road_tile', 20, 4, g => {
+        pxRect(g, 0, 0, 20, 4, C.ROAD);
+        // Lane marking (improved dashed line)
+        pxRect(g, 8, 1, 4, 2, 0xCCCC55);
+        px(g, 8, 1, 0xDDDD66); // brighter marking edge
+        // Oil stain hint
+        px(g, 3, 2, 0x555555); px(g, 4, 2, 0x555555); px(g, 3, 3, 0x555555);
+        // Pothole hint
+        px(g, 16, 2, 0x555555); px(g, 17, 2, 0x4A4A4A);
+        // Road texture variation
+        px(g, 1, 1, 0x6A6A6A); px(g, 13, 3, 0x5A5A5A); px(g, 19, 1, 0x6A6A6A);
+    });
+    genTex(scene, 'grass_tile', 20, 4, g => {
+        pxRect(g, 0, 0, 20, 4, C.GRASS);
+        // Varied green tones
+        px(g, 3, 1, 0x66BB66); px(g, 11, 0, 0x66BB66); px(g, 17, 2, 0x66BB66);
+        px(g, 7, 0, 0x449944); px(g, 14, 3, 0x449944); // darker patches
+        px(g, 1, 2, 0x77CC77); px(g, 9, 1, 0x77CC77); px(g, 18, 0, 0x77CC77); // lighter
+        // Tiny flower dots
+        px(g, 5, 1, 0xFFDD44); // yellow flower
+        px(g, 13, 2, 0xFF88AA); // pink flower
+        // Dirt patches
+        px(g, 16, 3, 0x998866); px(g, 2, 3, 0x998866);
+    });
+
+    // Touch button icons
+    // Heart - more rounded, gradient
+    genTex(scene, 'heart', 7, 6, g => {
+        // Heart shape
+        pxRect(g, 0, 0, 3, 3, C.RED); pxRect(g, 4, 0, 3, 3, C.RED);
+        pxRect(g, 1, 1, 5, 3, C.RED);
+        pxRect(g, 2, 4, 3, 1, C.RED);
+        px(g, 3, 5, C.RED);
+        // Gradient: lighter top to darker bottom
+        px(g, 1, 0, 0xFF6666); px(g, 5, 0, 0xFF6666); // bright highlights
+        px(g, 0, 0, 0xFF5555); px(g, 4, 0, 0xFF5555);
+        // Darker bottom for depth
+        px(g, 3, 5, 0xBB2222);
+        px(g, 2, 4, 0xCC2222); px(g, 4, 4, 0xCC2222);
+        // White shine
+        px(g, 1, 1, 0xFF8888);
+    });
+
+    genTex(scene, 'btn_jump', 10, 10, g => {
+        pxRect(g, 4, 0, 2, 6, C.WHITE); // arrow up
+        pxRect(g, 2, 2, 6, 2, C.WHITE);
+        px(g, 3, 1, C.WHITE); px(g, 6, 1, C.WHITE);
+    });
+    genTex(scene, 'btn_collect', 10, 10, g => {
+        // Hand icon
+        pxRect(g, 3, 0, 4, 2, C.WHITE);
+        pxRect(g, 2, 2, 6, 5, C.WHITE);
+        pxRect(g, 1, 3, 1, 3, C.WHITE);
+        pxRect(g, 8, 3, 1, 3, C.WHITE);
+        pxRect(g, 3, 7, 4, 3, C.WHITE);
+    });
+}
+
+// === BOOT SCENE ===
+class BootScene extends Phaser.Scene {
+    constructor() { super('Boot'); }
+    create() {
+        generateAllSprites(this);
+        this.scene.start('Menu');
+    }
+}
+
+// === MENU SCENE ===
+class MenuScene extends Phaser.Scene {
+    constructor() { super('Menu'); }
+    create() {
+        SndMgr.init();
+        const save = SaveMgr.load();
+
+        // Sky background
+        this.cameras.main.setBackgroundColor(COLORS.SKY);
+
+        // Animated clouds
+        for (let i = 0; i < 5; i++) {
+            const c = this.add.image(Math.random() * GW, 40 + Math.random() * 80, 'cloud').setAlpha(0.7);
+            this.tweens.add({ targets: c, x: GW + 100, duration: 8000 + Math.random()*5000, repeat: -1,
+                onRepeat: () => { c.x = -80; c.y = 40 + Math.random() * 80; }
+            });
+        }
+
+        // Ground
+        for (let x = 0; x < GW; x += 60) {
+            this.add.image(x + 30, GROUND_Y + 10, 'sidewalk_tile').setScale(1);
+            this.add.image(x + 30, GROUND_Y + 22, 'grass_tile');
+        }
+
+        // Animated dog running across
+        const runDog = this.add.image(-50, GROUND_Y - 10, 'dackel_run_0').setScale(1);
+        this.tweens.add({
+            targets: runDog, x: GW + 50, duration: 6000, repeat: -1, delay: 1000,
+            onRepeat: () => { runDog.x = -50; }
+        });
+        this.time.addEvent({ delay: 300, loop: true, callback: () => {
+            runDog.setTexture(runDog.texture.key === 'dackel_run_0' ? 'dackel_run_1' : 'dackel_run_0');
+        }});
+
+        // Title
+        const titleStyle = { fontFamily: 'monospace', fontSize: '42px', color: '#FFDD00',
+            stroke: '#663300', strokeThickness: 6, align: 'center' };
+        const title = this.add.text(GW/2, 100, 'ACHTUNG\nKACKHAUFEN!', titleStyle).setOrigin(0.5);
+        this.tweens.add({ targets: title, scaleX: 1.05, scaleY: 1.05, duration: 500, yoyo: true, repeat: -1 });
+
+        // Steaming poop logo
+        const poopLogo = this.add.image(GW/2, 200, 'poop_big').setScale(3);
+        this.time.addEvent({ delay: 400, loop: true, callback: () => {
+            const s = this.add.image(poopLogo.x + Phaser.Math.Between(-10, 10), poopLogo.y - 20, 'steam').setScale(2).setAlpha(0.6);
+            this.tweens.add({ targets: s, y: s.y - 30, alpha: 0, duration: 800, onComplete: () => s.destroy() });
+        }});
+
+        // Tip text
+        const tip = this.add.text(GW/2, 255, TIPS[Math.floor(Math.random()*TIPS.length)],
+            { fontFamily: 'monospace', fontSize: '13px', color: '#665533' }).setOrigin(0.5);
+
+        // Buttons
+        const btnStyle = { fontFamily: 'monospace', fontSize: '24px', color: '#FFFFFF',
+            backgroundColor: '#44AA44', padding: { x: 20, y: 10 }, align: 'center' };
+        const btnPlay = this.add.text(GW/2, 310, '  SPIELEN!  ', btnStyle).setOrigin(0.5).setInteractive({ useHandCursor: true });
+        const btnHS = this.add.text(GW/2, 360, ' HIGHSCORES ', { ...btnStyle, fontSize: '18px', backgroundColor: '#3377AA' }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+        const btnHelp = this.add.text(GW/2, 400, ' ANLEITUNG  ', { ...btnStyle, fontSize: '18px', backgroundColor: '#AA7733' }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+
+        // Sound toggle
+        const sndBtn = this.add.text(GW - 50, 20, SndMgr.muted ? '🔇' : '🔊',
+            { fontSize: '28px' }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+        sndBtn.on('pointerdown', () => {
+            SndMgr.resume();
+            const m = SndMgr.toggleMute();
+            sndBtn.setText(m ? '🔇' : '🔊');
+            if (!m) SndMgr.click();
+        });
+
+        // Money display
+        if (save.totalMoney > 0) {
+            this.add.text(20, 20, `Taschengeld: ${save.totalMoney}€`,
+                { fontFamily: 'monospace', fontSize: '16px', color: '#FFDD00', stroke: '#333', strokeThickness: 2 });
+        }
+
+        // Button actions
+        btnPlay.on('pointerdown', () => {
+            SndMgr.resume(); SndMgr.click();
+            this.scene.start('Game', { level: 1 });
+        });
+        btnHS.on('pointerdown', () => { SndMgr.resume(); SndMgr.click(); this.scene.start('Highscore'); });
+        btnHelp.on('pointerdown', () => {
+            SndMgr.resume(); SndMgr.click();
+            this.showHelp();
+        });
+
+        // Hover effects
+        [btnPlay, btnHS, btnHelp].forEach(b => {
+            b.on('pointerover', () => b.setScale(1.1));
+            b.on('pointerout', () => b.setScale(1));
+        });
+    }
+    showHelp() {
+        const bg = this.add.rectangle(GW/2, GH/2, GW-60, GH-60, 0x000000, 0.85).setInteractive();
+        const txt = this.add.text(GW/2, GH/2, [
+            'ACHTUNG KACKHAUFEN! - Anleitung',
+            '',
+            'Du führst Hunde Gassi.',
+            'Die Hunde machen Haufen auf den Gehweg!',
+            '',
+            'LINKS tippen = SPRINGEN',
+            'RECHTS tippen = HAUFEN EINSAMMELN',
+            '',
+            'Eingesammelte Haufen = Taschengeld!',
+            'Liegengelassene Haufen = Ärger!',
+            'Du hast 3 Leben - Hindernisse kosten eins!',
+            'Bei 3 Strafzetteln ist GAME OVER!',
+            'Die Oma klaut dein ganzes Geld!',
+            '',
+            'Tastatur: Leertaste=Springen, E=Sammeln',
+            '',
+            '[ Tippen zum Schließen ]',
+        ].join('\n'), { fontFamily: 'monospace', fontSize: '14px', color: '#FFFFFF', align: 'center', lineSpacing: 4 }).setOrigin(0.5);
+        bg.on('pointerdown', () => { bg.destroy(); txt.destroy(); });
+    }
+}
+
+// === GAME SCENE ===
+class GameScene extends Phaser.Scene {
+    constructor() { super('Game'); }
+
+    init(data) {
+        this.levelNum = data.level || 1;
+        this.levelCfg = LEVELS[Math.min(this.levelNum - 1, LEVELS.length - 1)];
+        this.carryMoney = data.money || 0;
+        this.isBonus = data.bonus || false; // Hundepark Bonus-Level
+    }
+
+    create() {
+        SndMgr.init(); SndMgr.resume();
+        this.cameras.main.setBackgroundColor(COLORS.SKY);
+
+        // State
+        this.money = this.carryMoney;
+        this.poopsCollected = 0;
+        this.poopsMissed = 0;
+        this.missedSinceLastEvent = 0;
+        this.tickets = 0;
+        this.combo = 0;
+        this.comboTimer = 0;
+        this.comboMultiplier = 1;
+        this.distanceTraveled = 0;
+        this.gameSpeed = this.isBonus ? this.levelCfg.speed * 0.8 : this.levelCfg.speed;
+        this.bonusTimer = this.isBonus ? 20000 : 0; // 20 Sekunden Bonus-Level
+        this.isGameOver = false;
+        this.isPaused = false;
+        this.playerOnGround = true;
+        this.isCollecting = false;
+        this.collectCooldown = 0;
+        this.canCollect = true;
+        this.dogs = [];
+        this.activePoops = [];
+        this.obstacles = [];
+        this.npcs = [];
+        this.weatherParticles = [];
+        this.tutorialShown = this.levelNum > 1;
+        this.leashLength = 1.0; // 0.3 to 1.0 — affects dog distance + collect range
+        this.leashTarget = 1.0;
+        this.stompBounce = false;
+        this.isSliding = false; // snow belly-slide
+        this.slideTimer = 0;
+        this.lives = 3;
+        this.invincible = false; // brief invincibility after hit
+        this.catSpawned = false; // cat spawns once per level
+        this.catTriggerDist = 0.3 + Math.random() * 0.4; // spawn at 30-70% of level distance
+        this.dogsChasing = false; // dogs chasing cat
+        this.dogChaseTimer = 0;
+
+        // === BONUS LEVEL SETUP ===
+        if (this.isBonus) {
+            this.cameras.main.setBackgroundColor(0x88CCEE); // bright sky
+        }
+
+        // === PARALLAX BACKGROUND ===
+        this.bgElements = { far: [], mid: [], near: [] };
+        // Sky gradient is camera bg color
+        // Far: clouds
+        for (let i = 0; i < 6; i++) {
+            const c = this.add.image(i * 160, 50 + Math.random()*60, 'cloud').setAlpha(0.5).setDepth(0);
+            this.bgElements.far.push(c);
+        }
+        // Mid: houses and trees (bonus = only trees for park feel)
+        for (let i = 0; i < 8; i++) {
+            const type = this.isBonus ? 'tree' : (Math.random() > 0.5 ? 'house' : 'tree');
+            const el = this.add.image(i * 120, type === 'house' ? GROUND_Y - 65 : GROUND_Y - 50, type).setDepth(1);
+            this.bgElements.mid.push(el);
+        }
+        // Near: bushes, fences (bonus = only bushes)
+        for (let i = 0; i < 10; i++) {
+            const type = this.isBonus ? 'bush' : (Math.random() > 0.5 ? 'bush' : 'fence');
+            const el = this.add.image(i * 100, GROUND_Y - 12, type).setDepth(2);
+            this.bgElements.near.push(el);
+        }
+
+        // === GROUND ===
+        this.groundTiles = [];
+        for (let x = 0; x < GW + 120; x += 60) {
+            const sw = this.add.image(x, GROUND_Y + 6, 'sidewalk_tile').setDepth(3);
+            const rd = this.add.image(x, GROUND_Y + 18, 'road_tile').setDepth(3);
+            const gr = this.add.image(x, GROUND_Y + 30, 'grass_tile').setDepth(3);
+            this.groundTiles.push({ sw, rd, gr });
+        }
+
+        // Sidewalk top line
+        this.add.rectangle(GW/2, GROUND_Y - 2, GW, 2, 0x999999).setDepth(3);
+
+        // === PLAYER ===
+        this.player = this.add.sprite(PLAYER_X, GROUND_Y - 30, 'boy_run_0').setDepth(10);
+        this.playerVelY = 0;
+        this.playerBaseY = GROUND_Y - 30;
+        this.runFrame = 0;
+        this.runTimer = 0;
+
+        // === DOGS ===
+        const dogCount = this.levelCfg.dogs;
+        for (let i = 0; i < dogCount; i++) {
+            const info = DOG_BREEDS[i % DOG_BREEDS.length];
+            const dog = {
+                sprite: this.add.sprite(PLAYER_X + 220 + i * 60, GROUND_Y - 8, info.breed + '_run_0').setDepth(9).setFlipX(true),
+                info: info,
+                poopTimer: this.isBonus ? (1500 + Math.random() * 2000) : (3000 + Math.random() * 4000),
+                isPooping: false,
+                poopCooldown: 0,
+                frame: 0,
+                baseOffsetX: 220 + i * 60,
+                offsetX: 220 + i * 60,
+                offsetY: 0,
+                bobTimer: Math.random() * Math.PI * 2,
+            };
+            this.dogs.push(dog);
+        }
+
+        // === LEASH GRAPHICS ===
+        this.leashGfx = this.add.graphics().setDepth(9);
+
+        // === HUD ===
+        const hudStyle = { fontFamily: 'monospace', fontSize: '18px', color: '#FFFFFF', stroke: '#333333', strokeThickness: 3 };
+        this.add.image(30, 22, 'coin').setDepth(100).setScale(1.5);
+        this.hudMoney = this.add.text(50, 14, '0€', hudStyle).setDepth(100);
+        this.hudLevel = this.add.text(GW/2, 14, this.isBonus ? 'BONUS!' : `Level ${this.levelNum}`, { ...hudStyle, fontSize: '16px' }).setOrigin(0.5, 0).setDepth(100);
+        // Bonus timer HUD
+        this.hudBonusTimer = this.add.text(GW/2, 56, '', { fontFamily: 'monospace', fontSize: '20px', color: '#FFD700', stroke: '#333', strokeThickness: 3 }).setOrigin(0.5, 0).setDepth(100).setAlpha(this.isBonus ? 1 : 0);
+        this.add.image(GW - 140, 22, 'bag').setDepth(100).setScale(1.2);
+        this.hudPoops = this.add.text(GW - 120, 14, '0', hudStyle).setDepth(100);
+
+        // Lives display (hearts)
+        this.add.text(20, GH - 65, 'Leben:', { fontFamily: 'monospace', fontSize: '11px', color: '#FFF', stroke: '#333', strokeThickness: 2 }).setDepth(100);
+        this.hudHearts = [];
+        for (let i = 0; i < 3; i++) {
+            const h = this.add.image(30 + i * 28, GH - 48, 'heart').setDepth(100).setScale(1.5);
+            this.hudHearts.push(h);
+        }
+
+        // Ticket display
+        this.hudTickets = [];
+        for (let i = 0; i < 3; i++) {
+            const t = this.add.image(140 + i * 30, GH - 48, 'ticket').setDepth(100).setScale(1.3).setAlpha(0.3);
+            this.hudTickets.push(t);
+        }
+        this.add.text(130, GH - 65, 'Strafzettel:', { fontFamily: 'monospace', fontSize: '11px', color: '#FFF', stroke: '#333', strokeThickness: 2 }).setDepth(100);
+
+        // Progress bar
+        this.progressBg = this.add.rectangle(GW/2, 42, 200, 8, 0x333333).setDepth(100);
+        this.progressBar = this.add.rectangle(GW/2 - 99, 42, 2, 6, 0x44CC44).setDepth(100).setOrigin(0, 0.5);
+
+        // Leash indicator
+        this.add.text(GW - 70, 38, 'Leine:', { fontFamily: 'monospace', fontSize: '10px', color: '#CCC', stroke: '#333', strokeThickness: 2 }).setDepth(100);
+        this.leashBarBg = this.add.rectangle(GW - 30, 42, 40, 6, 0x333333).setDepth(100);
+        this.leashBar = this.add.rectangle(GW - 49, 42, 38, 4, 0x44CC44).setDepth(100).setOrigin(0, 0.5);
+
+        // Combo text
+        this.comboText = this.add.text(GW/2, GH/2 - 50, '', { fontFamily: 'monospace', fontSize: '32px', color: '#FFDD00', stroke: '#663300', strokeThickness: 4 }).setOrigin(0.5).setDepth(100).setAlpha(0);
+
+        // Touch buttons (semi-transparent)
+        if (this.isBonus) {
+            // Bonus: left = move left, center = collect, right = move right
+            this.add.text(GW/6, GH - 25, '← LINKS', { fontFamily: 'monospace', fontSize: '10px', color: '#FFFFFF' }).setOrigin(0.5).setAlpha(0.3).setDepth(99);
+            this.add.image(GW/2, GH - 35, 'btn_collect').setScale(2).setAlpha(0.25).setDepth(99);
+            this.add.text(GW/2, GH - 12, 'SAMMELN', { fontFamily: 'monospace', fontSize: '10px', color: '#FFFFFF' }).setOrigin(0.5).setAlpha(0.3).setDepth(99);
+            this.add.text(GW*5/6, GH - 25, 'RECHTS →', { fontFamily: 'monospace', fontSize: '10px', color: '#FFFFFF' }).setOrigin(0.5).setAlpha(0.3).setDepth(99);
+        } else {
+            this.add.rectangle(0, GH - 70, GW/2, 70, 0x000000, 0).setOrigin(0, 0).setDepth(99);
+            this.add.rectangle(GW/2, GH - 70, GW/2, 70, 0x000000, 0).setOrigin(0, 0).setDepth(99);
+            this.add.image(GW/4, GH - 35, 'btn_jump').setScale(2).setAlpha(0.25).setDepth(99);
+            this.add.image(GW*3/4, GH - 35, 'btn_collect').setScale(2).setAlpha(0.25).setDepth(99);
+            this.add.text(GW/4, GH - 12, 'SPRINGEN', { fontFamily: 'monospace', fontSize: '10px', color: '#FFFFFF' }).setOrigin(0.5).setAlpha(0.3).setDepth(99);
+            this.add.text(GW*3/4, GH - 12, 'SAMMELN', { fontFamily: 'monospace', fontSize: '10px', color: '#FFFFFF' }).setOrigin(0.5).setAlpha(0.3).setDepth(99);
+        }
+
+        // === WEATHER ===
+        this.weather = this.isBonus ? 'sunny' : this.levelCfg.weather; // Bonus = always sunny
+        this.applyWeatherVisuals();
+        this.weatherTimer = 0;
+        // Weather changes once mid-level
+        this.weatherChanged = false;
+        const weathers = ['sunny', 'rain', 'snow', 'fog'];
+        const others = weathers.filter(w => w !== this.weather);
+        this.nextWeather = others[Math.floor(Math.random() * others.length)];
+        this.weatherChangeDist = 0.4 + Math.random() * 0.2; // change at 40-60% of level
+        this.fogClouds = [];
+
+        // === INPUT ===
+        this.bonusMoveDir = 0; // -1 left, 0 none, 1 right (bonus only)
+        this.activeTouchId = null; // track touch for bonus movement
+        if (this.isBonus) {
+            // Bonus: touch left half = move left, right half = move right, tap = collect
+            this.input.on('pointerdown', (pointer) => {
+                SndMgr.resume();
+                if (this.isGameOver) return;
+                this.activeTouchId = pointer.id;
+                if (pointer.x < GW / 3) {
+                    this.bonusMoveDir = -1;
+                } else if (pointer.x > GW * 2 / 3) {
+                    this.bonusMoveDir = 1;
+                } else {
+                    this.doCollect();
+                }
+            });
+            this.input.on('pointerup', (pointer) => {
+                if (pointer.id === this.activeTouchId) this.bonusMoveDir = 0;
+            });
+            this.input.on('pointermove', (pointer) => {
+                if (!pointer.isDown || pointer.id !== this.activeTouchId) return;
+                if (pointer.x < GW / 3) {
+                    this.bonusMoveDir = -1;
+                } else if (pointer.x > GW * 2 / 3) {
+                    this.bonusMoveDir = 1;
+                } else {
+                    this.bonusMoveDir = 0;
+                }
+            });
+        } else {
+            // Normal: left half = jump, right half = collect
+            this.input.on('pointerdown', (pointer) => {
+                SndMgr.resume();
+                if (this.isGameOver) return;
+                if (pointer.x < GW / 2) {
+                    this.doJump();
+                } else {
+                    this.doCollect();
+                }
+            });
+        }
+
+        this.cursors = this.input.keyboard.createCursorKeys();
+        this.keyE = this.input.keyboard.addKey('E');
+        this.keyP = this.input.keyboard.addKey('P');
+        this.keySpace = this.input.keyboard.addKey('SPACE');
+        this.keyA = this.input.keyboard.addKey('A');
+        this.keyD = this.input.keyboard.addKey('D');
+        this.input.keyboard.on('keydown-P', () => this.togglePause());
+
+        // === SPAWN TIMERS ===
+        this.obstacleTimer = 2000;
+        this.nextObstacleTime = 2000 + Math.random() * 2000;
+
+        // === Level start text ===
+        this.showLevelStart();
+
+        // Start music
+        SndMgr.startMusic();
+    }
+
+    showLevelStart() {
+        const dogNames = this.dogs.map(d => d.info.name).join(', ');
+        const lines = this.isBonus ? [
+            'BONUS-LEVEL!',
+            '',
+            'HUNDEPARK!',
+            '',
+            'Die Hunde laufen frei!',
+            'Lauf hin und sammle die Haufen ein!',
+            'Beeil dich - sie verschwinden!',
+            'Goldene Haufen = 10x Punkte!',
+            '',
+            `Du hast 20 Sekunden!`,
+        ] : [
+            `Level ${this.levelNum}`,
+            '',
+            this.levelNum === 1 ? 'Erster Arbeitstag!' : `${this.dogs.length} Hunde, ${this.levelCfg.weather === 'sunny' ? 'sonnig' : this.levelCfg.weather === 'rain' ? 'Regen' : this.levelCfg.weather === 'snow' ? 'Schnee' : 'Nebel'}!`,
+            '',
+            `Heute gehst du mit\n${dogNames} Gassi!`,
+            '',
+            'Auf die Haufen, fertig, LOS!',
+        ];
+        const bg = this.add.rectangle(GW/2, GH/2, GW, GH, 0x000000, 0.7).setDepth(200);
+        const txt = this.add.text(GW/2, GH/2, lines.join('\n'),
+            { fontFamily: 'monospace', fontSize: '18px', color: '#FFDD00', align: 'center', lineSpacing: 4, stroke: '#333', strokeThickness: 2 }
+        ).setOrigin(0.5).setDepth(200);
+        this.isPaused = true;
+        this.time.delayedCall(2500, () => {
+            bg.destroy(); txt.destroy();
+            this.isPaused = false;
+            if (this.levelNum === 1 && !this.tutorialShown) this.showTutorial();
+        });
+    }
+
+    showTutorial() {
+        this.tutorialShown = true;
+        const t1 = this.add.text(GW/4, GH - 100, '← LINKS tippen\n= SPRINGEN',
+            { fontFamily: 'monospace', fontSize: '14px', color: '#FFFF00', align: 'center', stroke: '#333', strokeThickness: 2 }).setOrigin(0.5).setDepth(150);
+        const t2 = this.add.text(GW*3/4, GH - 100, 'RECHTS tippen →\n= SAMMELN',
+            { fontFamily: 'monospace', fontSize: '14px', color: '#FFFF00', align: 'center', stroke: '#333', strokeThickness: 2 }).setOrigin(0.5).setDepth(150);
+        this.tweens.add({ targets: [t1, t2], alpha: 0, duration: 500, delay: 4000, onComplete: () => { t1.destroy(); t2.destroy(); }});
+    }
+
+    applyWeatherVisuals() {
+        if (this.weather === 'rain') {
+            this.cameras.main.setBackgroundColor(0x667788);
+        } else if (this.weather === 'snow') {
+            this.cameras.main.setBackgroundColor(0xCCDDEE);
+        } else if (this.weather === 'fog') {
+            this.cameras.main.setBackgroundColor(0xAABBCC);
+        } else {
+            this.cameras.main.setBackgroundColor(COLORS.SKY);
+        }
+    }
+
+    changeWeather(newWeather) {
+        this.weather = newWeather;
+        this.applyWeatherVisuals();
+        // Remove old fog clouds when leaving fog
+        if (newWeather !== 'fog') {
+            this.fogClouds.forEach(c => { if (c.active) c.destroy(); });
+            this.fogClouds = [];
+        }
+        const names = { sunny: 'Sonne!', rain: 'Regen!', snow: 'Schnee!', fog: 'Nebel!' };
+        this.showFloatingText(GW/2, 80, '🌤️ Wetterwechsel: ' + names[newWeather], '#FFFFFF');
+    }
+
+    doJump() {
+        if (!this.playerOnGround || this.isPaused || this.isSliding) return;
+        this.playerVelY = -10;
+        this.playerOnGround = false;
+        SndMgr.jump();
+    }
+
+    doCollect() {
+        if (this.isPaused || !this.canCollect || this.isSliding) return;
+
+        // SNOW: ducking can cause a slip!
+        if (this.weather === 'snow' && this.playerOnGround && Math.random() < 0.30) {
+            this.startBellySlide();
+            return;
+        }
+
+        this.isCollecting = true;
+        this.canCollect = false;
+        this.collectCooldown = 300;
+        this.player.setTexture('boy_collect');
+        this.player.y = GROUND_Y - 18; // duck down (shorter sprite)
+
+        // Only collect poops the player figure is directly touching (body proximity)
+        const collectRange = 35;
+        let nearest = null, nearDist = collectRange;
+        this.activePoops.forEach(p => {
+            if (p.collected) return;
+            const dist = Math.abs(p.sprite.x - this.player.x);
+            if (dist < nearDist) { nearDist = dist; nearest = p; }
+        });
+
+        if (nearest) {
+            nearest.collected = true;
+            const value = nearest.type === 'gold' ? 10 : nearest.type === 'big' ? 2 : 1;
+
+            // Combo
+            this.combo++;
+            this.comboTimer = 2000;
+            if (this.combo >= 2) {
+                this.comboMultiplier = Math.min(5, 1 + Math.floor(this.combo / 2));
+                const ctxt = COMBO_TEXTS[Math.min(this.comboMultiplier, COMBO_TEXTS.length - 1)] || `x${this.comboMultiplier}!`;
+                this.comboText.setText(ctxt).setAlpha(1).setScale(0.5);
+                this.tweens.add({ targets: this.comboText, scaleX: 1.2, scaleY: 1.2, alpha: 0, duration: 800 });
+                SndMgr.combo();
+            }
+
+            const earned = value * this.comboMultiplier;
+            this.money += earned;
+            this.poopsCollected++;
+
+            // Visual feedback
+            const ft = this.add.text(nearest.sprite.x, nearest.sprite.y - 20, `+${earned}€`,
+                { fontFamily: 'monospace', fontSize: '18px', color: '#FFDD00', stroke: '#333', strokeThickness: 3 }).setOrigin(0.5).setDepth(50);
+            this.tweens.add({ targets: ft, y: ft.y - 40, alpha: 0, duration: 700, onComplete: () => ft.destroy() });
+
+            // Sparkle effect
+            for (let i = 0; i < 5; i++) {
+                const sp = this.add.image(nearest.sprite.x + Phaser.Math.Between(-15,15), nearest.sprite.y + Phaser.Math.Between(-15,5), 'sparkle').setDepth(50).setScale(Phaser.Math.FloatBetween(0.5, 1.5));
+                this.tweens.add({ targets: sp, y: sp.y - 20, alpha: 0, scaleX: 0, scaleY: 0, duration: 400 + Math.random()*200, onComplete: () => sp.destroy() });
+            }
+
+            // Remove poop sprite
+            if (nearest.steam) nearest.steam.destroy();
+            nearest.sprite.destroy();
+
+            SndMgr.collect();
+        }
+
+        this.time.delayedCall(200, () => {
+            this.isCollecting = false;
+            this.player.setTexture('boy_run_0');
+            if (this.playerOnGround) this.player.y = this.playerBaseY;
+        });
+        this.time.delayedCall(300, () => { this.canCollect = true; });
+    }
+
+    startBellySlide() {
+        this.isSliding = true;
+        this.slideTimer = 1500;
+        this.canCollect = false;
+        this.player.setTexture('boy_slide');
+        this.player.y = GROUND_Y - 10;
+        this.cameras.main.shake(200, 0.01);
+        SndMgr.bonk();
+
+        // Check if sliding into a poop (face first!)
+        const nearPoop = this.activePoops.find(p =>
+            !p.collected && Math.abs(p.sprite.x - this.player.x) < 80 && p.sprite.x > this.player.x
+        );
+        if (nearPoop) {
+            this.showFloatingText(this.player.x + 30, this.player.y - 30, 'VOLL INS GESICHT!', '#8B4513');
+        } else {
+            this.showFloatingText(this.player.x, this.player.y - 30, 'AUSGERUTSCHT!', '#88BBEE');
+        }
+
+        // Combo reset
+        this.combo = 0;
+        this.comboMultiplier = 1;
+    }
+
+    togglePause() {
+        this.isPaused = !this.isPaused;
+        if (this.isPaused) {
+            this.pauseOverlay = this.add.rectangle(GW/2, GH/2, GW, GH, 0x000000, 0.6).setDepth(200);
+            this.pauseText = this.add.text(GW/2, GH/2, 'PAUSE\n\nTippen zum Fortfahren',
+                { fontFamily: 'monospace', fontSize: '24px', color: '#FFFFFF', align: 'center' }).setOrigin(0.5).setDepth(200);
+            this.pauseOverlay.setInteractive();
+            this.pauseOverlay.on('pointerdown', () => this.togglePause());
+        } else {
+            if (this.pauseOverlay) { this.pauseOverlay.destroy(); this.pauseText.destroy(); }
+        }
+    }
+
+    update(time, delta) {
+      try {
+        if (this.isPaused || this.isGameOver) return;
+        const dt = delta / 1000;
+        const spd = this.gameSpeed;
+
+        // === SCROLL BACKGROUND (not in bonus - static park) ===
+        if (!this.isBonus) {
+            this.bgElements.far.forEach(el => {
+                el.x -= spd * 0.1 * dt;
+                if (el.x < -100) el.x += GW + 200;
+            });
+            this.bgElements.mid.forEach(el => {
+                el.x -= spd * 0.3 * dt;
+                if (el.x < -100) el.x += GW + 200 + Math.random() * 100;
+            });
+            this.bgElements.near.forEach(el => {
+                el.x -= spd * 0.6 * dt;
+                if (el.x < -80) el.x += GW + 160 + Math.random() * 60;
+            });
+
+            // Ground scroll
+            this.groundTiles.forEach(t => {
+                t.sw.x -= spd * dt;
+                t.rd.x -= spd * dt;
+                t.gr.x -= spd * dt;
+                if (t.sw.x < -60) {
+                    t.sw.x += (this.groundTiles.length) * 60;
+                    t.rd.x = t.sw.x;
+                    t.gr.x = t.sw.x;
+                }
+            });
+        }
+
+        // Distance
+        if (!this.isBonus) this.distanceTraveled += spd * dt;
+
+        // Progress bar (hide in bonus, use timer instead)
+        if (this.isBonus) {
+            const bonusProgress = Math.max(0, this.bonusTimer / 20000);
+            this.progressBar.width = bonusProgress * 198;
+        } else {
+            const progress = Math.min(1, this.distanceTraveled / this.levelCfg.distance);
+            this.progressBar.width = progress * 198;
+        }
+
+        // === PLAYER PHYSICS ===
+        if (!this.playerOnGround) {
+            this.playerVelY += 25 * dt; // gravity
+            this.player.y += this.playerVelY;
+            if (this.player.y >= this.playerBaseY) {
+                this.player.y = this.playerBaseY;
+                this.playerVelY = 0;
+                this.playerOnGround = true;
+            }
+        }
+
+        // === BONUS: player moves left/right ===
+        if (this.isBonus) {
+            const moveSpeed = 250;
+            // Keyboard: arrow keys or A/D
+            if (this.cursors.left.isDown || this.keyA.isDown) {
+                this.bonusMoveDir = -1;
+            } else if (this.cursors.right.isDown || this.keyD.isDown) {
+                this.bonusMoveDir = 1;
+            } else if (!this.input.activePointer.isDown) {
+                this.bonusMoveDir = 0;
+            }
+            this.player.x += this.bonusMoveDir * moveSpeed * dt;
+            this.player.x = Phaser.Math.Clamp(this.player.x, 30, GW - 30);
+            // Flip player sprite based on direction
+            if (this.bonusMoveDir < 0) this.player.setFlipX(true);
+            else if (this.bonusMoveDir > 0) this.player.setFlipX(false);
+        }
+
+        // Belly slide recovery
+        if (this.isSliding) {
+            this.slideTimer -= delta;
+            this.player.setTexture('boy_slide');
+            this.player.y = GROUND_Y - 10;
+            if (this.slideTimer <= 0) {
+                this.isSliding = false;
+                this.canCollect = true;
+                this.player.y = this.playerBaseY;
+                this.player.setTexture('boy_run_0');
+                this.showFloatingText(this.player.x, this.player.y - 20, 'Bäh!', '#8B4513');
+            }
+        }
+
+        // Player run animation
+        if (this.playerOnGround && !this.isCollecting && !this.isSliding) {
+            this.runTimer += delta;
+            if (this.runTimer > 120) {
+                this.runTimer = 0;
+                this.runFrame = (this.runFrame + 1) % 4;
+                this.player.setTexture('boy_run_' + this.runFrame);
+            }
+        }
+        if (!this.playerOnGround && !this.isSliding) {
+            this.player.setTexture('boy_jump');
+        }
+
+        // === LEASH ===
+        this.leashLength += (this.leashTarget - this.leashLength) * 0.03;
+        this.leashLength = Phaser.Math.Clamp(this.leashLength, 0.3, 1.0);
+        // Slowly recover leash
+        if (this.leashTarget < 1.0) this.leashTarget += dt * 0.05;
+        this.leashTarget = Phaser.Math.Clamp(this.leashTarget, 0.3, 1.0);
+        // Leash bar color
+        const lc = this.leashLength > 0.6 ? 0x44CC44 : this.leashLength > 0.4 ? 0xCCCC44 : 0xCC4444;
+        this.leashBar.width = this.leashLength * 38;
+        this.leashBar.fillColor = lc;
+
+        // === DOG CHASE TIMER ===
+        if (this.dogsChasing) {
+            this.dogChaseTimer -= delta;
+            if (this.dogChaseTimer <= 0) {
+                this.dogsChasing = false;
+                this.gameSpeed = this.levelCfg.speed; // Speed zurück auf normal
+                SndMgr.startMusic(); // Normale Musik wieder
+                this.dogs.forEach(d => { delete d.chaseOffsetX; });
+                this.showFloatingText(GW/2, 120, 'Hunde kommen zurück!', '#44AA44');
+            }
+        }
+
+        // === DOGS ===
+        this.dogs.forEach((dog, idx) => {
+            dog.bobTimer += dt * 3;
+
+            let targetX, targetY;
+            if (this.isBonus) {
+                // Bonus: dogs roam freely across the screen
+                if (!dog.roamTargetX || Math.abs(dog.sprite.x - dog.roamTargetX) < 10) {
+                    dog.roamTargetX = 60 + Math.random() * (GW - 120);
+                }
+                targetX = dog.roamTargetX;
+                targetY = GROUND_Y - 8 + Math.sin(dog.bobTimer) * 3;
+                dog.sprite.x += (targetX - dog.sprite.x) * 0.02;
+                // Flip dog based on movement direction
+                dog.sprite.setFlipX(targetX > dog.sprite.x);
+            } else {
+                // Normal: leash-based positioning
+                const baseOff = this.dogsChasing && dog.chaseOffsetX ? dog.chaseOffsetX : dog.baseOffsetX;
+                dog.offsetX = baseOff * this.leashLength;
+                targetX = this.player.x + dog.offsetX;
+                targetY = GROUND_Y - 8 + Math.sin(dog.bobTimer) * 2;
+                dog.sprite.x += (targetX - dog.sprite.x) * 0.1;
+            }
+            dog.sprite.y += (targetY - dog.sprite.y) * 0.1;
+
+            // Animate
+            dog.poopCooldown -= delta;
+            if (!dog.isPooping) {
+                if (Math.floor(time / 250) % 2 === idx % 2) {
+                    dog.sprite.setTexture(dog.info.breed + '_run_0');
+                } else {
+                    dog.sprite.setTexture(dog.info.breed + '_run_1');
+                }
+            }
+
+            // Poop timer — only one dog poops at a time!
+            dog.poopTimer -= delta;
+            const anyonePooping = this.dogs.some(d => d.isPooping);
+            if (dog.poopTimer <= 0 && !dog.isPooping && dog.poopCooldown <= 0 && !anyonePooping) {
+                this.dogPoop(dog);
+                // More dogs = faster frequency (divide timer by dog count)
+                const baseCooldown = (2500 + Math.random() * 4000) / dog.info.poopRate;
+                dog.poopTimer = this.isBonus
+                    ? (2000 + Math.random() * 2500) // Bonus: weniger Haufen
+                    : baseCooldown / Math.max(1, this.dogs.length * 0.6);
+                dog.poopCooldown = 1500;
+            }
+        });
+
+        // === LEASH (hidden in bonus - dogs roam free!) ===
+        this.leashGfx.clear();
+        if (!this.isBonus) {
+            this.leashGfx.lineStyle(2, COLORS.LEASH, 0.7);
+            this.dogs.forEach(dog => {
+                this.leashGfx.beginPath();
+                this.leashGfx.moveTo(this.player.x + 5, this.player.y + 10);
+                this.leashGfx.lineTo(dog.sprite.x - 10, dog.sprite.y);
+                this.leashGfx.strokePath();
+            });
+        }
+
+        // === ACTIVE POOPS ===
+        this.activePoops = this.activePoops.filter(p => {
+            if (p.collected || !p.sprite || !p.sprite.active) return false;
+
+            if (this.isBonus) {
+                // Bonus: poops stay in place but fade and disappear after 3.5 seconds
+                p.bonusLife = (p.bonusLife === undefined ? 2000 : p.bonusLife) - delta;
+                const lifeRatio = Math.max(0, p.bonusLife / 2000);
+                // Start blinking when <30% life left
+                if (lifeRatio < 0.3) {
+                    const blink = Math.sin(time * 0.02) > 0;
+                    p.sprite.setAlpha(blink ? 0.8 : 0.2);
+                } else {
+                    p.sprite.setAlpha(lifeRatio * 0.5 + 0.5);
+                }
+                if (p.bonusLife <= 0) {
+                    p.sprite.destroy();
+                    if (p.steam) p.steam.destroy();
+                    this.showFloatingText(p.sprite.x, GROUND_Y - 20, 'Weg!', '#999999');
+                    this.poopsMissed++;
+                    return false;
+                }
+            } else {
+                // Normal: poops scroll left
+                p.sprite.x -= spd * dt;
+                if (p.steam && p.steam.active) p.steam.x = p.sprite.x;
+
+                // RAIN: poops dissolve!
+                if (this.weather === 'rain') {
+                    p.dissolveTimer = (p.dissolveTimer || 4000) - delta;
+                    const dissolveProgress = 1 - Math.max(0, p.dissolveTimer) / 4000;
+                    p.sprite.setAlpha(1 - dissolveProgress * 0.8);
+                    p.sprite.setScale(1 - dissolveProgress * 0.3);
+                    if (p.dissolveTimer <= 0) {
+                        const px = p.sprite.x;
+                        p.sprite.destroy();
+                        if (p.steam) p.steam.destroy();
+                        this.poopsMissed++;
+                        this.missedSinceLastEvent++;
+                        this.checkMissedPoopEvents();
+                        this.showFloatingText(px, GROUND_Y - 20, 'Aufgelöst!', '#4488CC');
+                        return false;
+                    }
+                }
+
+                if (p.sprite.x < -30) {
+                    p.sprite.destroy();
+                    if (p.steam) p.steam.destroy();
+                    this.poopsMissed++;
+                    this.missedSinceLastEvent++;
+                    this.checkMissedPoopEvents();
+                    return false;
+                }
+            }
+            // Collision with player (stepping on it)
+            if (!p.collected && Math.abs(p.sprite.x - this.player.x) < 20 && this.playerOnGround && this.player.y > GROUND_Y - 35) {
+                if (!p.steppedOn) {
+                    p.steppedOn = true;
+                    this.showFloatingText(this.player.x, this.player.y - 30, 'Igitt!', '#CC6600');
+                }
+            }
+            return true;
+        });
+
+        // === CAT SPAWN (once per level, from level 2+, NOT in bonus) ===
+        if (!this.isBonus && !this.catSpawned && this.levelNum >= 2) {
+            const catProgress = this.distanceTraveled / this.levelCfg.distance;
+            if (catProgress >= this.catTriggerDist) {
+                this.spawnCat();
+                this.catSpawned = true;
+            }
+        }
+
+        // === OBSTACLES (disabled in bonus level) ===
+        if (!this.isBonus) {
+            this.obstacleTimer -= delta;
+            if (this.obstacleTimer <= 0) {
+                this.spawnObstacle();
+                this.obstacleTimer = (2500 + Math.random() * 3000) / (1 + this.levelNum * 0.1);
+            }
+        }
+        this.obstacles = this.obstacles.filter(obs => {
+            if (!obs.sprite || !obs.sprite.active) return false;
+            obs.sprite.x -= spd * dt;
+            if (obs.sprite.x < -60) { obs.sprite.destroy(); return false; }
+            // Collision
+            if (!obs.hit && Math.abs(obs.sprite.x - this.player.x) < 25 && this.playerOnGround && !this.invincible && !this.isSliding) {
+                obs.hit = true;
+                this.loseLife();
+                if (obs.type === 'puddle') {
+                    // Hinfallen-Animation: Spieler rutscht und dreht sich
+                    this.showFloatingText(this.player.x, this.player.y - 30, 'Rutsch!', '#4488CC');
+                    this.player.setTexture('boy_slide');
+                    this.player.y = GROUND_Y - 10;
+                    this.tweens.add({
+                        targets: this.player, angle: 360, x: this.player.x + 30,
+                        duration: 500, ease: 'Cubic.easeOut',
+                        onComplete: () => {
+                            this.player.setAngle(0);
+                            this.player.x = PLAYER_X;
+                            this.player.y = this.playerBaseY;
+                            this.player.setTexture('boy_run_0');
+                        }
+                    });
+                    // Wasser-Spritzer
+                    for (let i = 0; i < 6; i++) {
+                        const sp = this.add.image(obs.sprite.x + Phaser.Math.Between(-15, 15), GROUND_Y - 5, 'raindrop').setDepth(15).setScale(2).setAlpha(0.8);
+                        this.tweens.add({ targets: sp, y: sp.y - 30 - Math.random()*20, x: sp.x + Phaser.Math.Between(-20, 20), alpha: 0, duration: 400, onComplete: () => sp.destroy() });
+                    }
+                } else if (obs.type === 'hole') {
+                    // Reinfallen-Animation: Spieler sackt nach unten weg
+                    this.showFloatingText(this.player.x, this.player.y - 30, 'LOCH!', '#FF4444');
+                    const savedY = this.playerBaseY;
+                    this.tweens.add({
+                        targets: this.player, y: GROUND_Y + 15, scaleX: 0.7, scaleY: 0.3,
+                        duration: 300, ease: 'Cubic.easeIn',
+                        onComplete: () => {
+                            // Wieder rausklettern
+                            this.tweens.add({
+                                targets: this.player, y: savedY, scaleX: 1, scaleY: 1,
+                                duration: 400, ease: 'Back.easeOut',
+                                onComplete: () => { this.player.setTexture('boy_run_0'); }
+                            });
+                        }
+                    });
+                    // Dreck-Partikel fliegen hoch
+                    for (let i = 0; i < 5; i++) {
+                        const d = this.add.rectangle(obs.sprite.x + Phaser.Math.Between(-8, 8), GROUND_Y, 4, 4, 0x665533).setDepth(15);
+                        this.tweens.add({ targets: d, y: d.y - 30 - Math.random()*25, x: d.x + Phaser.Math.Between(-20, 20), alpha: 0, duration: 500, onComplete: () => d.destroy() });
+                    }
+                } else if (obs.type === 'barrier') {
+                    this.showFloatingText(this.player.x, this.player.y - 30, 'AUTSCH!', '#FF6600');
+                    // Spieler prallt zurück
+                    this.tweens.add({
+                        targets: this.player, x: this.player.x - 25, duration: 150,
+                        yoyo: true, ease: 'Cubic.easeOut',
+                        onComplete: () => { this.player.x = PLAYER_X; }
+                    });
+                    // Baustelle wackelt
+                    this.tweens.add({ targets: obs.sprite, angle: 15, duration: 100, yoyo: true, repeat: 3, onComplete: () => { if(obs.sprite.active) obs.sprite.setAngle(0); } });
+                } else if (obs.type === 'bicycle') {
+                    // Fahrrad kippt um
+                    this.showFloatingText(this.player.x, this.player.y - 30, 'KRACH!', '#FF4444');
+                    this.tweens.add({
+                        targets: obs.sprite, angle: 90, y: GROUND_Y + 5,
+                        duration: 400, ease: 'Bounce.easeOut'
+                    });
+                    // Spieler stolpert
+                    this.player.setTexture('boy_slide');
+                    this.player.y = GROUND_Y - 10;
+                    this.time.delayedCall(500, () => {
+                        this.player.y = this.playerBaseY;
+                        this.player.setTexture('boy_run_0');
+                        this.player.setAngle(0);
+                    });
+                    // Klingel-Sound (hoher Ton)
+                    SndMgr._tone(1200, 0.1, 'square', 0.15);
+                    SndMgr._tone(1500, 0.08, 'square', 0.1, 0.1);
+                }
+            }
+            return true;
+        });
+
+        // === NPCs ===
+        this.npcs = this.npcs.filter(npc => {
+            if (!npc.sprite || !npc.sprite.active) {
+                if (npc.speech) npc.speech.destroy();
+                if (npc.pan) npc.pan.destroy();
+                return false;
+            }
+            if (npc.type === 'ordnungsamt' || npc.type === 'oma') {
+                npc.sprite.x += (spd * 0.3) * dt; // chasing
+                if (npc.speech) npc.speech.x = npc.sprite.x;
+                if (npc.speech) npc.speech.y = npc.sprite.y - 40;
+
+                // Oma: pan swings above her head
+                if (npc.type === 'oma') {
+                    if (npc.pan) {
+                        npc.pan.x = npc.sprite.x + 8;
+                        npc.pan.y = npc.sprite.y - 32;
+                        npc.pan.setRotation(Math.sin(time * 0.008) * 0.7);
+                    }
+                    // Oma smashes obstacles she reaches!
+                    this.obstacles = this.obstacles.filter(obs => {
+                        if (Math.abs(obs.sprite.x - npc.sprite.x) < 30) {
+                            // SMASH! Oma clears it with her pan
+                            SndMgr.bonk();
+                            // Obstacle flies away
+                            this.tweens.add({
+                                targets: obs.sprite,
+                                y: obs.sprite.y - 80,
+                                x: obs.sprite.x + Phaser.Math.Between(-60, 60),
+                                angle: Phaser.Math.Between(-180, 180),
+                                alpha: 0, duration: 500,
+                                onComplete: () => obs.sprite.destroy()
+                            });
+                            this.showFloatingText(obs.sprite.x, obs.sprite.y - 20, 'WUMM!', '#663399');
+                            return false;
+                        }
+                        return true;
+                    });
+                }
+
+                // MARIO STOMP CHECK: player falling onto NPC from above
+                const dx = Math.abs(npc.sprite.x - this.player.x);
+                const playerFeet = this.player.y + 20;
+                const npcTop = npc.sprite.y - 20;
+                if (dx < 30 && !this.playerOnGround && this.playerVelY > 0 && playerFeet >= npcTop && playerFeet <= npc.sprite.y) {
+                    // STOMP!
+                    this.stompNPC(npc);
+                    npc.sprite.destroy();
+                    if (npc.speech) npc.speech.destroy();
+                    if (npc.pan) npc.pan.destroy();
+                    return false;
+                }
+
+                if (npc.sprite.x >= this.player.x - 10 && this.playerOnGround) {
+                    // Caught on ground!
+                    this.npcCatchPlayer(npc);
+                    npc.sprite.destroy();
+                    if (npc.speech) npc.speech.destroy();
+                    if (npc.pan) npc.pan.destroy();
+                    return false;
+                }
+                if (npc.sprite.x > GW + 50) { npc.sprite.destroy(); if (npc.speech) npc.speech.destroy(); if (npc.pan) npc.pan.destroy(); return false; }
+                // Timeout - NPC gives up
+                npc.timer -= delta;
+                if (npc.timer <= 0) {
+                    npc.sprite.destroy();
+                    if (npc.speech) npc.speech.destroy();
+                    if (npc.pan) npc.pan.destroy();
+                    return false;
+                }
+            } else if (npc.type === 'cat') {
+                npc.timer -= delta;
+
+                if (!npc.chaseTriggered) {
+                    // Phase 1: Cat runs in from left at 2x speed toward dogs
+                    const catSpeed = this.levelCfg.speed * 2;
+                    npc.sprite.x += catSpeed * dt;
+
+                    const firstDogX = this.dogs.length > 0 ? this.dogs[0].sprite.x : this.player.x + 100;
+                    if (npc.sprite.x >= firstDogX - 30) {
+                        npc.chaseTriggered = true;
+                        npc.soundTimer = 0;
+                        this.cameras.main.shake(300, 0.01);
+                        SndMgr.bark(); SndMgr.hiss();
+                        this.showFloatingText(GW/2, 120, 'Die Hunde jagen die Katze!', '#FF8833');
+                        // Whole game speeds up for 7 seconds
+                        this.gameSpeed = this.levelCfg.speed * 2;
+                        SndMgr.startMusic(280);
+                        this.dogsChasing = true;
+                        this.dogChaseTimer = 7000;
+                        this.dogs.forEach(d => {
+                            d.chaseOffsetX = d.baseOffsetX + 250;
+                        });
+                    }
+                } else {
+                    // Phase 2: Chase! Cat stays visible, running ahead of the dogs
+                    const lastDog = this.dogs[this.dogs.length - 1];
+                    const targetX = lastDog ? lastDog.sprite.x + 60 : this.player.x + 300;
+                    // Cat stays just ahead of the furthest dog
+                    npc.sprite.x += (targetX - npc.sprite.x) * 0.08;
+                    // Keep cat on screen
+                    npc.sprite.x = Phaser.Math.Clamp(npc.sprite.x, this.player.x + 50, GW - 40);
+
+                    // Periodic barking, meowing, hissing during chase
+                    npc.soundTimer = (npc.soundTimer || 0) - delta;
+                    if (npc.soundTimer <= 0) {
+                        npc.soundTimer = 800 + Math.random() * 1200;
+                        const r = Math.random();
+                        if (r < 0.4) SndMgr.bark();
+                        else if (r < 0.7) SndMgr.meow();
+                        else SndMgr.hiss();
+                    }
+                }
+
+                // Cat disappears when chase timer runs out
+                if (npc.timer <= 0 || (!this.dogsChasing && npc.chaseTriggered)) {
+                    npc.sprite.destroy();
+                    return false;
+                }
+            } else if (npc.type === 'strange_dog') {
+                npc.sprite.x -= spd * 0.5 * dt;
+                npc.timer -= delta;
+                if (npc.sprite.x < -50 || npc.timer <= 0) { npc.sprite.destroy(); return false; }
+            }
+            return true;
+        });
+
+        // === COMBO TIMER ===
+        if (this.comboTimer > 0) {
+            this.comboTimer -= delta;
+            if (this.comboTimer <= 0) {
+                this.combo = 0;
+                this.comboMultiplier = 1;
+            }
+        }
+
+        // === WEATHER CHANGE mid-level (not in bonus) ===
+        if (!this.isBonus && !this.weatherChanged && this.levelNum >= 2) {
+            const wp = this.distanceTraveled / this.levelCfg.distance;
+            if (wp >= this.weatherChangeDist) {
+                this.weatherChanged = true;
+                this.changeWeather(this.nextWeather);
+            }
+        }
+
+        // === WEATHER EFFECTS ===
+        this.weatherTimer -= delta;
+        if (this.weatherTimer <= 0) {
+            this.weatherTimer = 50;
+            if (this.weather === 'rain') {
+                const drop = this.add.image(Math.random() * GW, -5, 'raindrop').setDepth(40).setAlpha(0.6);
+                this.tweens.add({ targets: drop, y: GH + 10, x: drop.x - 30, duration: 600 + Math.random()*200, onComplete: () => drop.destroy() });
+            } else if (this.weather === 'snow') {
+                const flake = this.add.image(Math.random() * GW, -5, 'snowflake').setDepth(40).setAlpha(0.8);
+                this.tweens.add({ targets: flake, y: GH + 10, x: flake.x + Phaser.Math.Between(-40, 40), duration: 2000 + Math.random()*1000, onComplete: () => flake.destroy() });
+            } else if (this.weather === 'fog') {
+                // Spawn thick fog clouds that drift across, obscuring everything
+                if (this.fogClouds.length < 6 && Math.random() < 0.3) {
+                    const fy = GROUND_Y - 80 + Phaser.Math.Between(-60, 40);
+                    const fscale = 2.5 + Math.random() * 2;
+                    const fc = this.add.image(GW + 80, fy, 'fog_cloud')
+                        .setScale(fscale).setAlpha(0.55 + Math.random() * 0.15)
+                        .setDepth(55); // above gameplay (dogs=9, poops=5, obstacles=5, player=10)
+                    this.fogClouds.push(fc);
+                }
+            }
+        }
+        // Move fog clouds
+        if (this.weather === 'fog') {
+            this.fogClouds = this.fogClouds.filter(fc => {
+                if (!fc.active) return false;
+                fc.x -= (spd * 0.4 + 20) * dt;
+                if (fc.x < -200) { fc.destroy(); return false; }
+                return true;
+            });
+        }
+
+        // === HUD UPDATE ===
+        this.hudMoney.setText(this.money + '€');
+        this.hudPoops.setText(this.isBonus ? `${this.poopsCollected}` : `${this.poopsCollected}/${this.levelCfg.poopGoal}`);
+        for (let i = 0; i < 3; i++) {
+            this.hudTickets[i].setAlpha(i < this.tickets ? 1 : 0.3);
+            this.hudHearts[i].setAlpha(i < this.lives ? 1 : 0.15);
+            this.hudHearts[i].setScale(i < this.lives ? 1.5 : 1);
+        }
+
+        // === KEYBOARD ===
+        if (this.isBonus) {
+            // Bonus: Space/E/Down = collect, Left/Right/A/D = move (handled above)
+            if (Phaser.Input.Keyboard.JustDown(this.keySpace) || Phaser.Input.Keyboard.JustDown(this.keyE) || Phaser.Input.Keyboard.JustDown(this.cursors.down)) {
+                this.doCollect();
+            }
+        } else {
+            if (Phaser.Input.Keyboard.JustDown(this.keySpace) || Phaser.Input.Keyboard.JustDown(this.cursors.up)) {
+                this.doJump();
+            }
+            if (Phaser.Input.Keyboard.JustDown(this.keyE) || Phaser.Input.Keyboard.JustDown(this.cursors.down)) {
+                this.doCollect();
+            }
+        }
+
+        // === BONUS TIMER ===
+        if (this.isBonus) {
+            this.bonusTimer -= delta;
+            const secs = Math.max(0, Math.ceil(this.bonusTimer / 1000));
+            this.hudBonusTimer.setText(`⏱ ${secs}s`);
+            if (secs <= 5) this.hudBonusTimer.setColor('#FF4444');
+            if (this.bonusTimer <= 0) {
+                this.levelComplete();
+            }
+        }
+
+        // === LEVEL COMPLETE CHECK ===
+        if (!this.isBonus && this.distanceTraveled >= this.levelCfg.distance) {
+            this.levelComplete();
+        }
+      } catch(e) {
+        console.error('UPDATE ERROR:', e);
+        if (!this._errorShown) {
+            this._errorShown = true;
+            this.add.text(10, 10, 'FEHLER: ' + e.message + '\n' + e.stack,
+                { fontSize: '12px', color: '#FF0000', backgroundColor: '#000000', wordWrap: { width: GW - 20 } }).setDepth(999);
+        }
+      }
+    }
+
+    dogPoop(dog) {
+        dog.isPooping = true;
+        dog.sprite.setTexture(dog.info.breed + '_poop');
+        SndMgr.poop();
+
+        this.time.delayedCall(600, () => {
+            dog.isPooping = false;
+            // Spawn poop at dog's position, but NOT on obstacles!
+            let poopX = dog.sprite.x;
+            const tooClose = this.obstacles.some(obs =>
+                obs.sprite && obs.sprite.active && Math.abs(obs.sprite.x - poopX) < 40
+            );
+            if (tooClose) {
+                // Shift poop to clear space (behind the obstacle)
+                poopX -= 50;
+                if (poopX < PLAYER_X + 30) poopX = PLAYER_X + 30;
+            }
+            const r = Math.random();
+            const goldChance = this.isBonus ? 0.15 : 0.02; // Bonus: 15% golden poops!
+            const type = r < goldChance ? 'gold' : r < 0.25 ? 'big' : 'small';
+            const texKey = 'poop_' + type;
+            const poopSprite = this.add.image(poopX, GROUND_Y - 2, texKey).setDepth(5);
+
+            // Steam
+            let steam = null;
+            const steamContainer = this.add.container(poopSprite.x, poopSprite.y - 10).setDepth(6);
+            this.time.addEvent({ delay: 500, repeat: 5, callback: () => {
+                if (!poopSprite.active) return;
+                const s = this.add.image(Phaser.Math.Between(-5, 5), Phaser.Math.Between(-5, 0), 'steam').setScale(0.8).setAlpha(0.5);
+                steamContainer.add(s);
+                this.tweens.add({ targets: s, y: s.y - 15, alpha: 0, duration: 600, onComplete: () => s.destroy() });
+            }});
+
+            this.activePoops.push({ sprite: poopSprite, type, collected: false, steppedOn: false, steam: steamContainer });
+        });
+    }
+
+    spawnObstacle() {
+        const types = ['puddle', 'hole', 'bicycle', 'barrier'];
+        const type = types[Math.floor(Math.random() * types.length)];
+        let y = GROUND_Y;
+        if (type === 'puddle') y = GROUND_Y + 2;
+        else if (type === 'hole') y = GROUND_Y + 2;
+        else if (type === 'bicycle') y = GROUND_Y - 20;
+        else if (type === 'barrier') y = GROUND_Y - 16;
+
+        const sprite = this.add.image(GW + 50, y, type).setDepth(5);
+        this.obstacles.push({ sprite, type, hit: false });
+
+        // Sometimes spawn a car on the road
+        if (Math.random() < 0.3) {
+            const car = this.add.image(GW + 100, GROUND_Y + 18, 'car').setDepth(4);
+            this.tweens.add({ targets: car, x: -100, duration: 2000, onComplete: () => car.destroy() });
+        }
+
+        // Random NPC events (strange dogs only, cat is distance-based)
+        if (Math.random() < 0.15 && !this.npcs.some(n => n.type === 'strange_dog')) {
+            this.spawnStrangeDog();
+        }
+    }
+
+    checkMissedPoopEvents() {
+        // No penalties in bonus level!
+        if (this.isBonus) return;
+        // Never both Oma and Ordnungsamt at the same time!
+        const hasChaser = this.npcs.some(n => n.type === 'ordnungsamt' || n.type === 'oma');
+        if (hasChaser) return;
+
+        // Ordnungsamt after ~3 missed
+        if (this.missedSinceLastEvent >= 3) {
+            this.spawnOrdnungsamt();
+            this.missedSinceLastEvent = 0;
+            return; // don't also spawn oma
+        }
+        // Oma after ~5 missed total
+        if (this.poopsMissed >= this.levelCfg.omaAfter && this.poopsMissed % 5 === 0) {
+            this.spawnOma();
+        }
+    }
+
+    spawnOrdnungsamt() {
+        SndMgr.siren();
+        const sprite = this.add.sprite(-40, GROUND_Y - 30, 'ordnungsamt').setDepth(10);
+        const speech = this.add.text(sprite.x, sprite.y - 40, 'HALT! STEHEN BLEIBEN!',
+            { fontFamily: 'monospace', fontSize: '11px', color: '#FF4444', backgroundColor: '#FFFFFF', padding: { x: 4, y: 2 } }).setDepth(11).setOrigin(0.5);
+        this.npcs.push({ sprite, type: 'ordnungsamt', timer: 8000, speech });
+        this.showFloatingText(GW/2, 80, '🚔 Ordnungsamt!', '#FF4444');
+    }
+
+    spawnOma() {
+        SndMgr.bonk();
+        const sprite = this.add.sprite(-40, GROUND_Y - 30, 'oma').setDepth(10);
+        const pan = this.add.sprite(-40, GROUND_Y - 65, 'pan').setDepth(11).setScale(1.3);
+        const line = OMA_LINES[Math.floor(Math.random() * OMA_LINES.length)];
+        const speech = this.add.text(sprite.x, sprite.y - 40, line,
+            { fontFamily: 'monospace', fontSize: '11px', color: '#663399', backgroundColor: '#FFFFFF', padding: { x: 4, y: 2 } }).setDepth(11).setOrigin(0.5);
+        this.npcs.push({ sprite, type: 'oma', timer: 6000, speech, pan });
+    }
+
+    spawnCat() {
+        SndMgr.meow();
+        // Cat enters from the LEFT, runs right at 2x speed
+        const sprite = this.add.sprite(-50, GROUND_Y - 15, 'cat').setDepth(10);
+        this.npcs.push({ sprite, type: 'cat', timer: 12000, chaseTriggered: false });
+        this.showFloatingText(GW/2, 120, '🐱 KATZE!!!', '#FF8833');
+    }
+
+    spawnStrangeDog() {
+        const sprite = this.add.sprite(GW + 30, GROUND_Y - 10, 'strange_dog').setDepth(8);
+        this.npcs.push({ sprite, type: 'strange_dog', timer: 3000 });
+        SndMgr.bark();
+        // Make own dogs nervous - leash shortens a bit
+        this.leashTarget = Math.max(0.5, this.leashTarget - 0.2);
+        this.dogs.forEach(d => { d.poopTimer = Math.min(d.poopTimer, 1000); });
+    }
+
+    stompNPC(npc) {
+        // Mario-style stomp! Bounce player up
+        this.playerVelY = -8;
+        this.playerOnGround = false;
+        SndMgr.stomp();
+        this.cameras.main.shake(150, 0.01);
+
+        const bonus = npc.type === 'ordnungsamt' ? 5 : 3;
+        this.money += bonus;
+
+        // Squash animation
+        const squashed = this.add.sprite(npc.sprite.x, GROUND_Y - 5, npc.type === 'ordnungsamt' ? 'ordnungsamt' : 'oma').setDepth(10);
+        squashed.setScale(1.5, 0.3); // flat!
+        this.tweens.add({ targets: squashed, alpha: 0, scaleX: 2, duration: 600, onComplete: () => squashed.destroy() });
+
+        // Stars/sparkle around stomped NPC
+        for (let i = 0; i < 8; i++) {
+            const angle = (i / 8) * Math.PI * 2;
+            const sp = this.add.image(npc.sprite.x, npc.sprite.y, 'sparkle').setDepth(50).setScale(1.5);
+            this.tweens.add({
+                targets: sp, x: sp.x + Math.cos(angle) * 40, y: sp.y + Math.sin(angle) * 40,
+                alpha: 0, duration: 500, onComplete: () => sp.destroy()
+            });
+        }
+
+        const label = npc.type === 'ordnungsamt' ? 'PLATT! +5€' : 'ZERQUETSCHT! +3€';
+        this.showFloatingText(npc.sprite.x, npc.sprite.y - 40, label, '#44FF44');
+    }
+
+    loseLife() {
+        if (this.invincible || this.isGameOver) return;
+        this.lives--;
+        this.cameras.main.shake(300, 0.02);
+        SndMgr.bonk();
+        this.showFloatingText(this.player.x, this.player.y - 30, 'AUTSCH!', '#FF4444');
+
+        // Invincibility frames (player blinks)
+        this.invincible = true;
+        const blink = this.time.addEvent({ delay: 100, repeat: 15, callback: () => {
+            this.player.setAlpha(this.player.alpha === 1 ? 0.3 : 1);
+        }});
+        this.time.delayedCall(1600, () => {
+            this.invincible = false;
+            this.player.setAlpha(1);
+        });
+
+        // Combo reset
+        this.combo = 0;
+        this.comboMultiplier = 1;
+
+        if (this.lives <= 0) {
+            this.gameOver();
+        }
+    }
+
+    npcCatchPlayer(npc) {
+        if (this.isGameOver) return;
+        if (npc.type === 'ordnungsamt') {
+            this.tickets++;
+            const fine = 5;
+            this.money = Math.max(0, this.money - fine);
+            this.cameras.main.shake(300, 0.02);
+            SndMgr.siren();
+            this.showFloatingText(this.player.x, this.player.y - 50, `STRAFZETTEL! -${fine}€`, '#FF0000');
+            if (this.tickets >= 3) {
+                this.gameOver();
+            }
+        } else if (npc.type === 'oma') {
+            // Oma steals EVERYTHING!
+            const stolen = this.money;
+            this.money = 0;
+            this.cameras.main.shake(400, 0.025);
+            SndMgr.bonk();
+            if (stolen > 0) {
+                this.showFloatingText(this.player.x, this.player.y - 50, `BONK! -${stolen}€ ALLES WEG!`, '#663399');
+            } else {
+                this.showFloatingText(this.player.x, this.player.y - 50, 'BONK! Nichts zu holen!', '#663399');
+            }
+        }
+    }
+
+    showFloatingText(x, y, text, color) {
+        const t = this.add.text(x, y, text,
+            { fontFamily: 'monospace', fontSize: '16px', color: color, stroke: '#333', strokeThickness: 3 }).setOrigin(0.5).setDepth(100);
+        this.tweens.add({ targets: t, y: y - 40, alpha: 0, duration: 1200, onComplete: () => t.destroy() });
+    }
+
+    levelComplete() {
+        if (this.isGameOver) return;
+        this.isGameOver = true;
+        SndMgr.stopMusic();
+        SndMgr.fanfare();
+
+        const allCollected = this.poopsMissed === 0;
+        const cleanBonus = allCollected ? 10 : 0;
+        const levelEarnings = this.money - this.carryMoney; // nur dieses Level
+        const totalMoney = this.money + cleanBonus;
+
+        const save = SaveMgr.load();
+        save.totalMoney += levelEarnings + cleanBonus;
+        if (!this.isBonus) save.maxLevel = Math.max(save.maxLevel, this.levelNum + 1);
+        SaveMgr.save(save);
+
+        const bg = this.add.rectangle(GW/2, GH/2, GW, GH, 0x000000, 0.75).setDepth(200);
+
+        const lines = this.isBonus ? [
+            'BONUS-LEVEL VORBEI!',
+            '',
+            `Haufen gesammelt: ${this.poopsCollected}`,
+            `Davon goldene: ${this.activePoops.filter(p => p.type === 'gold' && p.collected).length}`,
+            '',
+            `Bonus-Taschengeld: +${levelEarnings}€`,
+            `Taschengeld gesamt: ${totalMoney}€`,
+            '',
+            'Weiter geht\'s!',
+        ] : [
+            `Level ${this.levelNum} geschafft!`,
+            '',
+            `Haufen gesammelt: ${this.poopsCollected}`,
+            `Haufen liegen gelassen: ${this.poopsMissed}`,
+            `Strafzettel: ${this.tickets}`,
+            '',
+            `Dieses Level: +${levelEarnings}€`,
+            allCollected ? `SAUBER-BONUS: +${cleanBonus}€!` : '',
+            `Taschengeld gesamt: ${totalMoney}€`,
+            '',
+        ].filter(Boolean);
+
+        const txt = this.add.text(GW/2, GH/2 - 40, lines.join('\n'),
+            { fontFamily: 'monospace', fontSize: '16px', color: this.isBonus ? '#FFD700' : '#FFDD00', align: 'center', lineSpacing: 4, stroke: '#333', strokeThickness: 2 }).setOrigin(0.5).setDepth(200);
+
+        const isNextBonus = !this.isBonus && this.levelNum % 3 === 0;
+        const btnLabel = isNextBonus ? '  BONUS-LEVEL!  ' : '  WEITER!  ';
+        const btnColor = isNextBonus ? '#CC8800' : '#44AA44';
+        const btnNext = this.add.text(GW/2, GH/2 + 100, btnLabel,
+            { fontFamily: 'monospace', fontSize: '22px', color: '#FFF', backgroundColor: btnColor, padding: { x: 16, y: 8 } }).setOrigin(0.5).setDepth(200).setInteractive({ useHandCursor: true });
+        if (isNextBonus) {
+            this.add.text(GW/2, GH/2 + 130, 'Ab in den Hundepark!', { fontFamily: 'monospace', fontSize: '12px', color: '#FFD700', stroke: '#333', strokeThickness: 2 }).setOrigin(0.5).setDepth(200);
+        }
+        btnNext.on('pointerdown', () => {
+            SndMgr.click();
+            if (this.isBonus) {
+                // After bonus, continue to next level
+                this.scene.restart({ level: this.levelNum + 1, money: totalMoney });
+            } else if (this.levelNum % 3 === 0) {
+                // Every 3 levels: BONUS LEVEL! (same level num, bonus flag)
+                this.scene.restart({ level: this.levelNum, money: totalMoney, bonus: true });
+            } else {
+                this.scene.restart({ level: this.levelNum + 1, money: totalMoney });
+            }
+        });
+        btnNext.on('pointerover', () => btnNext.setScale(1.1));
+        btnNext.on('pointerout', () => btnNext.setScale(1));
+    }
+
+    gameOver() {
+        if (this.isGameOver) return;
+        this.isGameOver = true;
+        SndMgr.stopMusic();
+        SndMgr.sad();
+        this.cameras.main.shake(500, 0.03);
+
+        const save = SaveMgr.load();
+        const sessionEarnings = this.money - this.carryMoney;
+        save.totalMoney += Math.max(0, sessionEarnings);
+        SaveMgr.save(save);
+
+        this.time.delayedCall(1000, () => {
+            this.scene.start('GameOver', {
+                money: this.money, // Gesamtes Geld über alle Level
+                poopsCollected: this.poopsCollected,
+                poopsMissed: this.poopsMissed,
+                level: this.levelNum,
+                tickets: this.tickets,
+                lives: this.lives,
+            });
+        });
+    }
+}
+
+// === GAME OVER SCENE ===
+class GameOverScene extends Phaser.Scene {
+    constructor() { super('GameOver'); }
+    init(data) { this.data = data; }
+    create() {
+        const d = this.data;
+        const isPrison = d.tickets >= 3;
+
+        if (isPrison) {
+            this.cameras.main.setBackgroundColor(0x111122);
+        } else {
+            this.cameras.main.setBackgroundColor(0x331111);
+        }
+
+        const title = isPrison ? 'AB INS GEFÄNGNIS!' : 'GAME OVER';
+        const titleColor = isPrison ? '#8888FF' : '#FF4444';
+        const subtitle = isPrison
+            ? '3 Strafzettel! Das Ordnungsamt hat dich eingebuchtet!'
+            : d.lives <= 0
+                ? 'Keine Leben mehr!'
+                : GAMEOVER_TEXTS[Math.floor(Math.random() * GAMEOVER_TEXTS.length)];
+
+        this.add.text(GW/2, 50, title, { fontFamily: 'monospace', fontSize: '36px', color: titleColor, stroke: '#000', strokeThickness: 4 }).setOrigin(0.5);
+        this.add.text(GW/2, 95, subtitle, { fontFamily: 'monospace', fontSize: '14px', color: '#FFAA44', wordWrap: { width: 600 }, align: 'center' }).setOrigin(0.5);
+
+        // Visual
+        if (isPrison) {
+            // Prison bars
+            for (let i = 0; i < 8; i++) {
+                this.add.rectangle(GW/2 - 80 + i * 24, 180, 4, 100, 0x888888).setDepth(5);
+            }
+            this.add.image(GW/2, 190, 'boy_run_0').setScale(2).setDepth(3);
+            this.add.image(GW/2 + 40, 170, 'ordnungsamt').setScale(1.5).setDepth(1);
+        } else {
+            this.add.image(GW/2, 190, 'boy_run_0').setScale(2);
+            for (let i = 0; i < 6; i++) {
+                this.add.image(GW/2 + Phaser.Math.Between(-100, 100), 220 + Phaser.Math.Between(-20, 20), 'poop_small').setScale(1.5);
+            }
+        }
+
+        const stats = [
+            `Level: ${d.level}`,
+            `Haufen gesammelt: ${d.poopsCollected}`,
+            `Haufen liegen gelassen: ${d.poopsMissed}`,
+            `Strafzettel: ${d.tickets}/3`,
+            `Leben: ${d.lives}/3`,
+            `Taschengeld: ${d.money}€`,
+        ];
+        this.add.text(GW/2, 275, stats.join('\n'),
+            { fontFamily: 'monospace', fontSize: '14px', color: '#FFFFFF', align: 'center', lineSpacing: 5 }).setOrigin(0.5);
+
+        // Highscore check
+        const save = SaveMgr.load();
+        const isHighscore = save.highscores.length < 10 || d.money > (save.highscores[save.highscores.length - 1]?.money || 0);
+
+        if (isHighscore && d.money > 0) {
+            this.add.text(GW/2, 370, 'NEUER HIGHSCORE! Name eingeben:',
+                { fontFamily: 'monospace', fontSize: '14px', color: '#FFDD00' }).setOrigin(0.5);
+            this.nameInput = '';
+            this.nameText = this.add.text(GW/2, 395, '___',
+                { fontFamily: 'monospace', fontSize: '22px', color: '#FFFFFF' }).setOrigin(0.5);
+
+            const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+            const letterBtns = [];
+            for (let i = 0; i < 26; i++) {
+                const l = letters[i];
+                const bx = 120 + (i % 13) * 44;
+                const by = 420 + Math.floor(i / 13) * 30;
+                const btn = this.add.text(bx, by, l,
+                    { fontFamily: 'monospace', fontSize: '16px', color: '#FFF', backgroundColor: '#555', padding: { x: 8, y: 4 } }).setInteractive({ useHandCursor: true });
+                btn.on('pointerdown', () => {
+                    if (this.nameInput.length < 8) {
+                        this.nameInput += l;
+                        this.nameText.setText(this.nameInput + '_'.repeat(Math.max(0, 3 - this.nameInput.length)));
+                        SndMgr.click();
+                    }
+                });
+                letterBtns.push(btn);
+            }
+
+            const btnOK = this.add.text(GW/2, 485, '  OK  ',
+                { fontFamily: 'monospace', fontSize: '18px', color: '#FFF', backgroundColor: '#44AA44', padding: { x: 16, y: 6 } }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+            btnOK.on('pointerdown', () => {
+                const name = this.nameInput || 'ANON';
+                SaveMgr.addHighscore(save, { name, money: d.money, level: d.level, poops: d.poopsCollected });
+                SndMgr.click();
+                letterBtns.forEach(b => b.destroy());
+                btnOK.destroy();
+                this.nameText.setText(name + ' gespeichert!');
+                this.showButtons();
+            });
+        } else {
+            this.showButtons();
+        }
+    }
+
+    showButtons() {
+        const btnStyle = { fontFamily: 'monospace', fontSize: '20px', color: '#FFFFFF', padding: { x: 16, y: 8 } };
+        const btnRetry = this.add.text(GW/2 - 100, 470, 'NOCHMAL!', { ...btnStyle, backgroundColor: '#44AA44' }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+        const btnMenu = this.add.text(GW/2 + 100, 470, 'MENÜ', { ...btnStyle, backgroundColor: '#3377AA' }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+
+        btnRetry.on('pointerdown', () => { SndMgr.click(); this.scene.start('Game', { level: 1 }); });
+        btnMenu.on('pointerdown', () => { SndMgr.click(); this.scene.start('Menu'); });
+        [btnRetry, btnMenu].forEach(b => { b.on('pointerover', () => b.setScale(1.1)); b.on('pointerout', () => b.setScale(1)); });
+    }
+}
+
+// === HIGHSCORE SCENE ===
+class HighscoreScene extends Phaser.Scene {
+    constructor() { super('Highscore'); }
+    create() {
+        this.cameras.main.setBackgroundColor(0x222244);
+        const save = SaveMgr.load();
+
+        this.add.text(GW/2, 30, 'HIGHSCORES', { fontFamily: 'monospace', fontSize: '30px', color: '#FFDD00', stroke: '#333', strokeThickness: 3 }).setOrigin(0.5);
+        this.add.text(GW/2, 65, `Gesamt-Taschengeld: ${save.totalMoney}€`,
+            { fontFamily: 'monospace', fontSize: '14px', color: '#AAAAFF' }).setOrigin(0.5);
+
+        // Table header
+        this.add.text(80, 100, '#', { fontFamily: 'monospace', fontSize: '14px', color: '#888' });
+        this.add.text(120, 100, 'NAME', { fontFamily: 'monospace', fontSize: '14px', color: '#888' });
+        this.add.text(320, 100, 'LEVEL', { fontFamily: 'monospace', fontSize: '14px', color: '#888' });
+        this.add.text(430, 100, 'GELD', { fontFamily: 'monospace', fontSize: '14px', color: '#888' });
+        this.add.text(540, 100, 'HAUFEN', { fontFamily: 'monospace', fontSize: '14px', color: '#888' });
+
+        if (save.highscores.length === 0) {
+            this.add.text(GW/2, 200, 'Noch keine Highscores!\nSpiel zuerst ein Spiel!',
+                { fontFamily: 'monospace', fontSize: '16px', color: '#666', align: 'center' }).setOrigin(0.5);
+        } else {
+            save.highscores.forEach((hs, i) => {
+                const y = 130 + i * 30;
+                const col = i === 0 ? '#FFD700' : i === 1 ? '#C0C0C0' : i === 2 ? '#CD7F32' : '#FFFFFF';
+                this.add.text(80, y, `${i+1}.`, { fontFamily: 'monospace', fontSize: '14px', color: col });
+                this.add.text(120, y, hs.name, { fontFamily: 'monospace', fontSize: '14px', color: col });
+                this.add.text(320, y, `${hs.level}`, { fontFamily: 'monospace', fontSize: '14px', color: col });
+                this.add.text(430, y, `${hs.money}€`, { fontFamily: 'monospace', fontSize: '14px', color: col });
+                this.add.text(540, y, `${hs.poops}`, { fontFamily: 'monospace', fontSize: '14px', color: col });
+            });
+        }
+
+        const btnBack = this.add.text(GW/2, GH - 40, '  ZURÜCK  ',
+            { fontFamily: 'monospace', fontSize: '20px', color: '#FFF', backgroundColor: '#555', padding: { x: 16, y: 8 } }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+        btnBack.on('pointerdown', () => { SndMgr.click(); this.scene.start('Menu'); });
+        btnBack.on('pointerover', () => btnBack.setScale(1.1));
+        btnBack.on('pointerout', () => btnBack.setScale(1));
+    }
+}
+
+// === PHASER CONFIG ===
+const config = {
+    type: Phaser.AUTO,
+    width: GW,
+    height: GH,
+    parent: 'game-container',
+    pixelArt: true,
+    roundPixels: true,
+    backgroundColor: '#87CEEB',
+    scale: {
+        mode: Phaser.Scale.FIT,
+        autoCenter: Phaser.Scale.CENTER_BOTH,
+    },
+    scene: [BootScene, MenuScene, GameScene, GameOverScene, HighscoreScene],
+    input: {
+        activePointers: 3,
+    },
+    audio: {
+        disableWebAudio: true, // We use our own Web Audio
+    },
+};
+
+const game = new Phaser.Game(config);
+
+// Prevent iOS double-tap zoom and scrolling
+document.addEventListener('touchstart', e => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
+document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+document.addEventListener('gesturestart', e => e.preventDefault());
+document.addEventListener('gesturechange', e => e.preventDefault());
+
+    </script>
+</body>
+</html>
