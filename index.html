@@ -34,8 +34,8 @@
 // ================================================================
 
 // === CONSTANTS ===
-const GW = 800, GH = 500;
-const GROUND_Y = 400;
+const GW = 1100, GH = 650;
+const GROUND_Y = 520;
 const PLAYER_X = 180;
 
 const COLORS = {
@@ -89,7 +89,7 @@ const SaveMgr = {
         try { return JSON.parse(localStorage.getItem(this._key)) || this.defaults(); }
         catch(e) { return this.defaults(); }
     },
-    defaults() { return { highscores: [], totalMoney: 0, maxLevel: 1, settings: { sound: true } }; },
+    defaults() { return { highscores: [], totalMoney: 0, maxLevel: 1, settings: { sound: true }, doubleJumpTutorial: false }; },
     save(data) { try { localStorage.setItem(this._key, JSON.stringify(data)); } catch(e) {} },
     addHighscore(data, entry) {
         data.highscores.push(entry);
@@ -175,6 +175,10 @@ const SndMgr = {
     stomp()   { this._tone(200, 0.06, 'square', 0.3); this._tone(400, 0.1, 'square', 0.2, 0.06); this._tone(600, 0.15, 'square', 0.15, 0.12); },
     meow()    { const t=this.ctx?this.ctx.currentTime:0; if(!this.ctx||this.muted)return; const o=this.ctx.createOscillator(),g=this.ctx.createGain(); o.type='sine'; o.frequency.setValueAtTime(700,t); o.frequency.linearRampToValueAtTime(900,t+0.2); o.frequency.linearRampToValueAtTime(600,t+0.4); g.gain.setValueAtTime(0.2,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.5); o.connect(g); g.connect(this.masterGain); o.start(t); o.stop(t+0.5); },
     hiss()    { if(!this.ctx||this.muted)return; const t=this.ctx.currentTime; this._noise(0.25, 0.2); this._tone(1200, 0.15, 'sawtooth', 0.12); this._tone(900, 0.1, 'sawtooth', 0.08, 0.1); },
+    coinCollect() { this._tone(880, 0.08, 'square', 0.25); this._tone(1100, 0.12, 'square', 0.2, 0.06); },
+    doubleJump() { if(!this.ctx||this.muted)return; const t=this.ctx.currentTime; const o=this.ctx.createOscillator(),g=this.ctx.createGain(); o.type='square'; o.frequency.setValueAtTime(400,t); o.frequency.linearRampToValueAtTime(700,t+0.12); g.gain.setValueAtTime(0.2,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.15); o.connect(g); g.connect(this.masterGain); o.start(t); o.stop(t+0.15); },
+    bonusCollect() { this._tone(523, 0.1, 'square', 0.2); this._tone(659, 0.1, 'square', 0.2, 0.1); this._tone(784, 0.15, 'square', 0.25, 0.2); },
+    pigeonFly() { if(!this.ctx||this.muted)return; const t=this.ctx.currentTime; const o=this.ctx.createOscillator(),g=this.ctx.createGain(); o.type='sine'; o.frequency.setValueAtTime(250,t); o.frequency.linearRampToValueAtTime(350,t+0.15); o.frequency.linearRampToValueAtTime(200,t+0.3); g.gain.setValueAtTime(0.15,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.3); o.connect(g); g.connect(this.masterGain); o.start(t); o.stop(t+0.3); this._noise(0.08, 0.12, 0.05); },
     click()   { this._tone(800, 0.05, 'square', 0.15); },
     startMusic(bpmOverride) {
         if (!this.ctx || this.muted) return;
@@ -212,6 +216,64 @@ const SndMgr = {
                 o.start(t); o.stop(t + noteLen);
                 this.musicOscs.push(o);
             });
+            this._musicTimer = setTimeout(() => scheduleLoop(startTime + loopLen), (loopLen - 1) * 1000);
+        };
+        scheduleLoop(this.ctx.currentTime + 0.1);
+    },
+    startBonusPowerMusic() {
+        if (!this.ctx || this.muted) return;
+        if (this.ctx.state === 'suspended') this.ctx.resume();
+        this.stopMusic();
+        this.musicGain = this.ctx.createGain();
+        this.musicGain.gain.value = 0.22;
+        this.musicGain.connect(this.masterGain);
+        // Peppige schnelle Bonus-Melodie
+        const melody = [784,880,784,659, 784,880,1047,880, 659,784,659,523, 659,784,880,0,
+                        880,1047,880,784, 880,1047,1175,1047, 784,880,784,659, 784,0,659,0];
+        const bass =   [196,196,196,196, 262,262,262,262, 165,165,165,165, 220,220,220,220,
+                        196,196,196,196, 262,262,262,262, 165,165,165,165, 196,196,196,196];
+        const bpm = 220, noteLen = 60/bpm;
+        const loopLen = melody.length * noteLen;
+        const scheduleLoop = (startTime) => {
+            melody.forEach((freq, i) => {
+                if (freq === 0 || !this.musicGain) return;
+                const t = startTime + i * noteLen;
+                const o = this.ctx.createOscillator();
+                const g = this.ctx.createGain();
+                o.type = 'square'; o.frequency.value = freq;
+                g.gain.setValueAtTime(0.25, t);
+                g.gain.exponentialRampToValueAtTime(0.001, t + noteLen * 0.85);
+                o.connect(g); g.connect(this.musicGain);
+                o.start(t); o.stop(t + noteLen);
+                this.musicOscs.push(o);
+            });
+            bass.forEach((freq, i) => {
+                if (!this.musicGain) return;
+                const t = startTime + i * noteLen;
+                const o = this.ctx.createOscillator();
+                const g = this.ctx.createGain();
+                o.type = 'triangle'; o.frequency.value = freq;
+                g.gain.setValueAtTime(0.45, t);
+                g.gain.exponentialRampToValueAtTime(0.001, t + noteLen * 0.8);
+                o.connect(g); g.connect(this.musicGain);
+                o.start(t); o.stop(t + noteLen);
+                this.musicOscs.push(o);
+            });
+            // Drum kick on every beat for extra energy
+            for (let i = 0; i < melody.length; i += 2) {
+                if (!this.musicGain) return;
+                const t = startTime + i * noteLen;
+                const kick = this.ctx.createOscillator();
+                const kg = this.ctx.createGain();
+                kick.type = 'sine';
+                kick.frequency.setValueAtTime(120, t);
+                kick.frequency.exponentialRampToValueAtTime(40, t + 0.06);
+                kg.gain.setValueAtTime(0.35, t);
+                kg.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+                kick.connect(kg); kg.connect(this.musicGain);
+                kick.start(t); kick.stop(t + 0.12);
+                this.musicOscs.push(kick);
+            }
             this._musicTimer = setTimeout(() => scheduleLoop(startTime + loopLen), (loopLen - 1) * 1000);
         };
         scheduleLoop(this.ctx.currentTime + 0.1);
@@ -312,6 +374,76 @@ const SndMgr = {
         };
         scheduleLoop(this.ctx.currentTime + 0.1);
     }
+};
+
+// === PARTICLE SYSTEM ===
+const VFX = {
+    particles: [],
+    MAX: 50,
+    scene: null,
+    init(scene) { this.scene = scene; this.particles = []; },
+    emit(x, y, cfg) {
+        const count = cfg.count || 3;
+        for (let i = 0; i < count; i++) {
+            if (this.particles.length >= this.MAX) {
+                const old = this.particles.shift();
+                if (old && old.obj && old.obj.active) old.obj.destroy();
+            }
+            const spread = cfg.spread || (Math.PI * 2);
+            const angle = -Math.PI / 2 + (Math.random() - 0.5) * spread;
+            const speed = (cfg.speed || 40) * (0.5 + Math.random() * 0.5);
+            const sz = cfg.size || 3;
+            const obj = this.scene.add.circle(x + (Math.random() - 0.5) * 6, y + (Math.random() - 0.5) * 4, sz, cfg.color || 0xFFFFFF).setDepth(cfg.depth || 45).setAlpha(cfg.alpha || 1);
+            this.particles.push({
+                obj,
+                vx: Math.cos(angle) * speed * (cfg.upward ? 0.3 : 1),
+                vy: cfg.upward ? -speed : Math.sin(angle) * speed,
+                life: cfg.lifetime || 500,
+                maxLife: cfg.lifetime || 500,
+                gravity: cfg.gravity || 0,
+                shrink: cfg.shrink !== false
+            });
+        }
+    },
+    update(delta) {
+        const dt = delta / 1000;
+        for (let i = this.particles.length - 1; i >= 0; i--) {
+            const p = this.particles[i];
+            p.life -= delta;
+            if (p.life <= 0 || !p.obj.active) {
+                if (p.obj.active) p.obj.destroy();
+                this.particles.splice(i, 1);
+                continue;
+            }
+            p.vy += p.gravity * dt;
+            p.obj.x += p.vx * dt;
+            p.obj.y += p.vy * dt;
+            const ratio = Math.max(0, p.life / p.maxLife);
+            p.obj.setAlpha(ratio * (p.obj.alpha > 0 ? 1 : 0));
+            if (p.shrink) p.obj.setScale(ratio);
+        }
+    },
+    clear() { this.particles.forEach(p => { if (p.obj && p.obj.active) p.obj.destroy(); }); this.particles = []; }
+};
+
+const FX = {
+    dustPuff: { count: 4, color: 0xBBAA88, speed: 35, lifetime: 300, size: 2.5, gravity: -20, spread: Math.PI, depth: 8 },
+    landDust: { count: 7, color: 0xBBAA88, speed: 55, lifetime: 400, size: 3.5, gravity: -25, spread: Math.PI, depth: 8 },
+    waterSplash: { count: 8, color: 0x88CCEE, speed: 90, lifetime: 500, size: 3, gravity: 300, spread: Math.PI, upward: true, depth: 16 },
+    poopSplat: { count: 6, color: 0x6B3410, speed: 45, lifetime: 300, size: 3, gravity: 150, spread: Math.PI * 2, depth: 15 },
+    coinCollect: { count: 6, color: 0xFFD700, speed: 50, lifetime: 400, size: 2, gravity: -40, spread: Math.PI * 2, depth: 50 },
+    heartCollect: { count: 8, color: 0xFF6688, speed: 70, lifetime: 500, size: 3, gravity: -30, spread: Math.PI * 2, depth: 50 },
+    hitStars: { count: 4, color: 0xFFDD00, speed: 25, lifetime: 800, size: 3.5, gravity: -8, spread: Math.PI * 0.5, depth: 55 },
+    snowPuff: { count: 2, color: 0xFFFFFF, speed: 15, lifetime: 300, size: 2, gravity: -10, spread: Math.PI * 0.3, depth: 8 },
+    poopSteam: { count: 2, color: 0xDDDDDD, speed: 12, lifetime: 1500, size: 3.5, gravity: -25, alpha: 0.4, spread: 0.6, depth: 6 },
+    stinkLine: { count: 1, color: 0x88CC44, speed: 8, lifetime: 2000, size: 2, gravity: -15, alpha: 0.35, spread: 0.3, depth: 6 },
+    slideSparks: { count: 3, color: 0xFFAA33, speed: 40, lifetime: 250, size: 2, gravity: -50, spread: Math.PI * 0.4, upward: true, depth: 11 },
+    jumpPuff: { count: 5, color: 0xBBAA88, speed: 45, lifetime: 350, size: 3, gravity: -15, spread: Math.PI, depth: 8 },
+    drool: { count: 1, color: 0xAADDFF, speed: 5, lifetime: 600, size: 1.5, gravity: 200, spread: 0.2, alpha: 0.6, depth: 10 },
+    pant: { count: 1, color: 0xFFFFFF, speed: 10, lifetime: 400, size: 2, gravity: -15, alpha: 0.5, spread: 0.4, depth: 10 },
+    leafFall: { count: 1, color: 0x44AA33, speed: 20, lifetime: 4000, size: 3, gravity: 15, spread: 0.5, shrink: false, depth: 35 },
+    redFlash: { count: 6, color: 0xFF2222, speed: 30, lifetime: 300, size: 4, gravity: 0, spread: Math.PI * 2, alpha: 0.5, depth: 55 },
+    goldGlow: { count: 3, color: 0xFFD700, speed: 15, lifetime: 800, size: 2.5, gravity: -10, alpha: 0.6, spread: Math.PI * 2, depth: 6 },
 };
 
 // === SPRITE HELPERS ===
@@ -2794,6 +2926,238 @@ function generateAllSprites(scene) {
       ctx.lineTo(17, 4); ctx.lineTo(3, 4); ctx.closePath(); ctx.fill();
       ctx.fillStyle = '#4AB83F'; ctx.fillRect(8, 0, 4, 5);
     });
+
+    // === PLATFORM SPRITES ===
+
+    // Parkbank (80x35)
+    genTex(scene, 'platform_bench', 80, 35, (ctx) => {
+      // Seat planks
+      ctx.fillStyle = '#8B6914'; ctx.fillRect(5, 8, 70, 5);
+      ctx.fillStyle = '#A07818'; ctx.fillRect(5, 14, 70, 5);
+      // Plank lines
+      ctx.strokeStyle = '#6B4E0A'; ctx.lineWidth = 0.5;
+      for (let x = 15; x < 75; x += 20) { ctx.beginPath(); ctx.moveTo(x, 8); ctx.lineTo(x, 19); ctx.stroke(); }
+      // Back rest
+      ctx.fillStyle = '#8B6914'; ctx.fillRect(5, 0, 70, 4);
+      ctx.fillStyle = '#7A5C10'; ctx.fillRect(5, 4, 70, 2);
+      // Metal legs
+      ctx.fillStyle = '#666'; ctx.fillRect(10, 19, 4, 16); ctx.fillRect(66, 19, 4, 16);
+      ctx.fillStyle = '#888'; ctx.fillRect(8, 19, 8, 3); ctx.fillRect(64, 19, 8, 3);
+      // Feet
+      ctx.fillStyle = '#555'; ctx.fillRect(7, 33, 10, 2); ctx.fillRect(63, 33, 10, 2);
+    });
+
+    // Briefkasten (40x80)
+    genTex(scene, 'platform_mailbox', 40, 80, (ctx) => {
+      // Post (pole)
+      ctx.fillStyle = '#777'; ctx.fillRect(17, 35, 6, 45);
+      // Box body
+      ctx.fillStyle = '#FFD700';
+      ctx.beginPath(); ctx.roundRect(2, 5, 36, 32, 3); ctx.fill();
+      ctx.fillStyle = '#E6C200';
+      ctx.beginPath(); ctx.roundRect(4, 7, 32, 28, 2); ctx.fill();
+      // Slot
+      ctx.fillStyle = '#333'; ctx.fillRect(10, 18, 20, 3);
+      // Post horn symbol
+      ctx.strokeStyle = '#333'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(20, 12, 5, 0.3, Math.PI - 0.3); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(14, 14); ctx.lineTo(12, 12); ctx.stroke();
+      // Top cap
+      ctx.fillStyle = '#FFD700'; ctx.fillRect(0, 3, 40, 4);
+    });
+
+    // Container (70x60)
+    genTex(scene, 'platform_container', 70, 60, (ctx) => {
+      // Body
+      ctx.fillStyle = '#2E7D32'; ctx.fillRect(3, 12, 64, 45);
+      ctx.fillStyle = '#388E3C'; ctx.fillRect(5, 14, 60, 41);
+      // Lid
+      ctx.fillStyle = '#1B5E20'; ctx.fillRect(0, 6, 70, 8);
+      ctx.fillStyle = '#2E7D32'; ctx.fillRect(2, 8, 66, 4);
+      // Lid handle
+      ctx.fillStyle = '#555'; ctx.fillRect(28, 3, 14, 5);
+      ctx.fillStyle = '#777'; ctx.fillRect(30, 4, 10, 3);
+      // Rust spots
+      ctx.fillStyle = rgba(0x8B4513, 0.3);
+      ctx.beginPath(); ctx.arc(15, 35, 4, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(55, 42, 3, 0, Math.PI*2); ctx.fill();
+      // Side ridges
+      ctx.fillStyle = rgba(0x1B5E20, 0.5);
+      ctx.fillRect(12, 14, 2, 41); ctx.fillRect(30, 14, 2, 41); ctx.fillRect(48, 14, 2, 41);
+      // Wheels
+      ctx.fillStyle = '#333'; ctx.beginPath(); ctx.arc(15, 58, 4, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(55, 58, 4, 0, Math.PI*2); ctx.fill();
+    });
+
+    // Bushaltestelle (120x100)
+    genTex(scene, 'platform_busstop', 120, 100, (ctx) => {
+      // Glass roof
+      ctx.fillStyle = rgba(0x88CCEE, 0.5); ctx.fillRect(5, 0, 110, 8);
+      ctx.fillStyle = rgba(0xAADDFF, 0.3); ctx.fillRect(5, 2, 110, 3);
+      // Metal frame
+      ctx.fillStyle = '#888'; ctx.fillRect(5, 0, 3, 100); ctx.fillRect(112, 0, 3, 100);
+      ctx.fillRect(5, 0, 110, 3);
+      // Glass back panel
+      ctx.fillStyle = rgba(0x88CCEE, 0.25); ctx.fillRect(8, 3, 104, 70);
+      ctx.strokeStyle = '#999'; ctx.lineWidth = 1;
+      ctx.strokeRect(8, 3, 52, 70); ctx.strokeRect(60, 3, 52, 70);
+      // H-Schild (yellow sign)
+      ctx.fillStyle = '#FFD700'; ctx.fillRect(100, 10, 18, 22);
+      ctx.fillStyle = '#333'; ctx.font = 'bold 16px monospace'; ctx.fillText('H', 104, 28);
+      // Bench inside
+      ctx.fillStyle = '#777'; ctx.fillRect(15, 78, 90, 5);
+      ctx.fillStyle = '#666'; ctx.fillRect(20, 83, 4, 17); ctx.fillRect(96, 83, 4, 17);
+    });
+
+    // Lieferwagen (150x80)
+    genTex(scene, 'platform_van', 150, 80, (ctx) => {
+      // Body
+      ctx.fillStyle = '#EEEEE8'; ctx.fillRect(5, 15, 120, 45);
+      ctx.fillStyle = '#E0E0D8'; ctx.fillRect(7, 17, 116, 41);
+      // Cabin
+      ctx.fillStyle = '#DDD'; ctx.fillRect(115, 20, 30, 40);
+      // Windshield
+      ctx.fillStyle = rgba(0x88BBEE, 0.6);
+      ctx.beginPath(); ctx.moveTo(125, 22); ctx.lineTo(143, 22); ctx.lineTo(145, 38); ctx.lineTo(125, 38); ctx.closePath(); ctx.fill();
+      // Roof
+      ctx.fillStyle = '#CCC'; ctx.fillRect(3, 10, 142, 7);
+      // Side line
+      ctx.fillStyle = '#3366AA'; ctx.fillRect(10, 38, 105, 3);
+      // Logo text
+      ctx.fillStyle = '#3366AA'; ctx.font = '10px monospace'; ctx.fillText('Lieferung', 30, 32);
+      // Wheels
+      ctx.fillStyle = '#333';
+      ctx.beginPath(); ctx.arc(30, 65, 10, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(125, 65, 10, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#777';
+      ctx.beginPath(); ctx.arc(30, 65, 5, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(125, 65, 5, 0, Math.PI*2); ctx.fill();
+      // Fender
+      ctx.fillStyle = '#AAA';
+      ctx.beginPath(); ctx.arc(30, 62, 13, Math.PI, 0); ctx.fill();
+      ctx.beginPath(); ctx.arc(125, 62, 13, Math.PI, 0); ctx.fill();
+    });
+
+    // Coin for platforms (16x16)
+    genTex(scene, 'coin_platform', 16, 16, (ctx) => {
+      ctx.fillStyle = '#FFD700';
+      ctx.beginPath(); ctx.arc(8, 8, 7, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#FFC000';
+      ctx.beginPath(); ctx.arc(8, 8, 5, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#FFE44D';
+      ctx.beginPath(); ctx.arc(7, 6, 2, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#B8860B'; ctx.font = 'bold 9px monospace'; ctx.fillText('€', 5, 11);
+    });
+
+    // Golden poop bonus (30x35)
+    genTex(scene, 'bonus_golden_poop', 30, 35, (ctx) => {
+      ctx.fillStyle = '#FFD700';
+      ctx.beginPath(); ctx.arc(15, 25, 10, 0, Math.PI, true); ctx.fill();
+      ctx.beginPath(); ctx.arc(11, 18, 6, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(19, 18, 6, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(15, 11, 4, 0, Math.PI*2); ctx.fill();
+      // Shine
+      ctx.fillStyle = '#FFF8B0';
+      ctx.beginPath(); ctx.arc(11, 15, 2, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(18, 22, 1.5, 0, Math.PI*2); ctx.fill();
+      // Glow
+      ctx.fillStyle = rgba(0xFFD700, 0.3);
+      ctx.beginPath(); ctx.arc(15, 20, 16, 0, Math.PI*2); ctx.fill();
+    });
+
+    // Heart bonus (20x20)
+    genTex(scene, 'bonus_heart', 20, 20, (ctx) => {
+      ctx.fillStyle = '#FF3333';
+      ctx.beginPath();
+      ctx.moveTo(10, 18); ctx.bezierCurveTo(0, 12, 0, 4, 5, 3);
+      ctx.bezierCurveTo(8, 2, 10, 5, 10, 7);
+      ctx.bezierCurveTo(10, 5, 12, 2, 15, 3);
+      ctx.bezierCurveTo(20, 4, 20, 12, 10, 18);
+      ctx.fill();
+      ctx.fillStyle = rgba(0xFFFFFF, 0.4);
+      ctx.beginPath(); ctx.arc(6, 6, 2.5, 0, Math.PI*2); ctx.fill();
+    });
+
+    // Vakuum bonus (25x30) - auto-collects nearby poops
+    genTex(scene, 'bonus_vakuum', 25, 30, (ctx) => {
+      ctx.fillStyle = '#33CC33';
+      ctx.beginPath(); ctx.moveTo(4, 8); ctx.quadraticCurveTo(2, 15, 3, 26);
+      ctx.lineTo(22, 26); ctx.quadraticCurveTo(23, 15, 21, 8); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#2EAA2E';
+      ctx.beginPath(); ctx.moveTo(6, 8); ctx.quadraticCurveTo(12.5, 4, 19, 8);
+      ctx.lineTo(21, 8); ctx.lineTo(4, 8); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#44EE44'; ctx.fillRect(10, 2, 5, 7);
+      // Swirl/vortex symbol instead of lightning
+      ctx.strokeStyle = '#FFD700'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(12.5, 18, 5, 0, Math.PI * 1.5); ctx.stroke();
+      ctx.beginPath(); ctx.arc(12.5, 18, 3, Math.PI, Math.PI * 2.5); ctx.stroke();
+      // Glow
+      ctx.fillStyle = rgba(0x33CC33, 0.3);
+      ctx.beginPath(); ctx.arc(12.5, 17, 14, 0, Math.PI*2); ctx.fill();
+    });
+
+    // Magnet bonus (25x20)
+    genTex(scene, 'bonus_magnet', 25, 20, (ctx) => {
+      // Horseshoe shape
+      ctx.strokeStyle = '#CC0000'; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(12.5, 12, 9, Math.PI, 0, true); ctx.stroke();
+      // Tips
+      ctx.fillStyle = '#CCC'; ctx.fillRect(2, 11, 5, 8); ctx.fillRect(18, 11, 5, 8);
+      ctx.fillStyle = '#CC0000'; ctx.fillRect(2, 6, 5, 6); ctx.fillRect(18, 6, 5, 6);
+      // Field lines
+      ctx.strokeStyle = rgba(0x4444FF, 0.3); ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.arc(12.5, 14, 5, Math.PI, 0, true); ctx.stroke();
+      ctx.beginPath(); ctx.arc(12.5, 14, 3, Math.PI, 0, true); ctx.stroke();
+    });
+
+    // Double jump puff (20x15)
+    genTex(scene, 'doublejump_puff', 20, 15, (ctx) => {
+      ctx.fillStyle = rgba(0xCCCCCC, 0.6);
+      ctx.beginPath(); ctx.arc(10, 8, 6, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(5, 10, 4, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(15, 10, 4, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = rgba(0xEEEEEE, 0.4);
+      ctx.beginPath(); ctx.arc(8, 6, 3, 0, Math.PI*2); ctx.fill();
+    });
+
+    // Coin sparkle (15x15)
+    genTex(scene, 'coin_sparkle', 15, 15, (ctx) => {
+      ctx.fillStyle = '#FFD700';
+      // 4-pointed star
+      ctx.beginPath();
+      ctx.moveTo(7.5, 0); ctx.lineTo(9, 5.5); ctx.lineTo(15, 7.5);
+      ctx.lineTo(9, 9.5); ctx.lineTo(7.5, 15); ctx.lineTo(6, 9.5);
+      ctx.lineTo(0, 7.5); ctx.lineTo(6, 5.5); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#FFF8B0';
+      ctx.beginPath(); ctx.arc(7.5, 7.5, 2, 0, Math.PI*2); ctx.fill();
+    });
+
+    // Pigeon (25x20)
+    genTex(scene, 'pigeon', 25, 20, (ctx) => {
+      // Body
+      ctx.fillStyle = '#888';
+      ctx.beginPath(); ctx.ellipse(12, 13, 9, 6, 0, 0, Math.PI*2); ctx.fill();
+      // Head
+      ctx.fillStyle = '#777';
+      ctx.beginPath(); ctx.arc(20, 8, 4, 0, Math.PI*2); ctx.fill();
+      // Eye
+      ctx.fillStyle = '#FF6600'; ctx.beginPath(); ctx.arc(22, 7, 1.2, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(22, 7, 0.6, 0, Math.PI*2); ctx.fill();
+      // Beak
+      ctx.fillStyle = '#CC9933'; ctx.beginPath(); ctx.moveTo(24, 8); ctx.lineTo(25, 9); ctx.lineTo(23, 9.5); ctx.fill();
+      // Wing
+      ctx.fillStyle = '#666';
+      ctx.beginPath(); ctx.ellipse(10, 11, 7, 4, -0.2, 0, Math.PI*2); ctx.fill();
+      // Neck shimmer
+      ctx.fillStyle = rgba(0x44AA88, 0.4);
+      ctx.beginPath(); ctx.ellipse(18, 10, 3, 2, 0.3, 0, Math.PI*2); ctx.fill();
+      // Tail
+      ctx.fillStyle = '#666';
+      ctx.beginPath(); ctx.moveTo(3, 12); ctx.lineTo(0, 10); ctx.lineTo(1, 14); ctx.fill();
+      // Legs
+      ctx.strokeStyle = '#CC6633'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(10, 18); ctx.lineTo(10, 20); ctx.moveTo(14, 18); ctx.lineTo(14, 20); ctx.stroke();
+    });
 }
 // === BOOT SCENE ===
 class BootScene extends Phaser.Scene {
@@ -2830,7 +3194,7 @@ class MenuScene extends Phaser.Scene {
         }
 
         // Animated dog running across
-        const runDog = this.add.image(-50, GROUND_Y - 24, 'dackel_run_0').setScale(0.8);
+        const runDog = this.add.image(-50, GROUND_Y - 24, 'dackel_run_0').setScale(0.8).setFlipX(true);
         this.tweens.add({
             targets: runDog, x: GW + 50, duration: 6000, repeat: -1, delay: 1000,
             onRepeat: () => { runDog.x = -50; }
@@ -2939,11 +3303,13 @@ class GameScene extends Phaser.Scene {
         this.levelNum = data.level || 1;
         this.levelCfg = LEVELS[Math.min(this.levelNum - 1, LEVELS.length - 1)];
         this.carryMoney = data.money || 0;
+        this.carryPoops = data.totalPoops || 0; // Haufen über alle Level
         this.isBonus = data.bonus || false; // Hundepark Bonus-Level
     }
 
     create() {
         SndMgr.init(); SndMgr.resume();
+        VFX.init(this);
         this.cameras.main.setBackgroundColor(COLORS.SKY);
 
         // State
@@ -2982,6 +3348,23 @@ class GameScene extends Phaser.Scene {
         this.catTriggerDist = 0.3 + Math.random() * 0.4; // spawn at 30-70% of level distance
         this.dogsChasing = false; // dogs chasing cat
         this.dogChaseTimer = 0;
+
+        // === PLATFORM STATE ===
+        this.platforms = [];
+        this.platformCoins = [];
+        this.platformBonuses = [];
+        this.canDoubleJump = false;
+        this.hasDoubleJumped = false;
+        this.isOnPlatform = false;
+        this.currentPlatform = null;
+        this.platformTimer = 0;
+        this.platformSpawnTimer = 2000;
+        this.doubleJumpTutorialShown = SaveMgr.load().doubleJumpTutorial || false;
+        this.activePigeons = [];
+        this.magnetActive = false;
+        this.magnetTimer = 0;
+        this.vakuumActive = false;
+        this.vakuumTimer = 0;
 
         // === BONUS LEVEL SETUP ===
         if (this.isBonus) {
@@ -3256,10 +3639,23 @@ class GameScene extends Phaser.Scene {
     }
 
     doJump() {
-        if (!this.playerOnGround || this.isPaused || this.isSliding) return;
-        this.playerVelY = -10;
-        this.playerOnGround = false;
-        SndMgr.jump();
+        if (this.isPaused || this.isSliding) return;
+        if (this.playerOnGround || this.isOnPlatform) {
+            VFX.emit(this.player.x, this.player.y + 50, FX.jumpPuff);
+            this.playerVelY = -7;
+            this.playerOnGround = false;
+            this.isOnPlatform = false;
+            this.currentPlatform = null;
+            this.canDoubleJump = true;
+            this.hasDoubleJumped = false;
+            SndMgr.jump();
+        } else if (this.canDoubleJump && !this.hasDoubleJumped) {
+            this.playerVelY = -8;
+            this.hasDoubleJumped = true;
+            this.canDoubleJump = false;
+            SndMgr.doubleJump();
+            this.spawnDoubleJumpEffect();
+        }
     }
 
     doCollect() {
@@ -3296,8 +3692,11 @@ class GameScene extends Phaser.Scene {
             if (this.combo >= 2) {
                 this.comboMultiplier = Math.min(5, 1 + Math.floor(this.combo / 2));
                 const ctxt = COMBO_TEXTS[Math.min(this.comboMultiplier, COMBO_TEXTS.length - 1)] || `x${this.comboMultiplier}!`;
-                this.comboText.setText(ctxt).setAlpha(1).setScale(0.5);
-                this.tweens.add({ targets: this.comboText, scaleX: 1.2, scaleY: 1.2, alpha: 0, duration: 800 });
+                // Rainbow colors for high combos
+                const comboColors = ['#FFDD00', '#FF8800', '#FF4444', '#FF00FF', '#00FFFF'];
+                this.comboText.setText(ctxt).setAlpha(1).setScale(0.5).setColor(comboColors[Math.min(this.comboMultiplier - 1, comboColors.length - 1)]);
+                this.tweens.add({ targets: this.comboText, scaleX: 1.4, scaleY: 1.4, alpha: 0, duration: 900 });
+                if (this.comboMultiplier >= 3) this.cameras.main.shake(100, 0.005 * this.comboMultiplier);
                 SndMgr.combo();
             }
 
@@ -3311,15 +3710,17 @@ class GameScene extends Phaser.Scene {
                 { fontFamily: 'monospace', fontSize: '18px', color: '#FFDD00', stroke: '#333', strokeThickness: 3 }).setOrigin(0.5).setDepth(50);
             this.tweens.add({ targets: ft, y: ft.y - 40, alpha: 0, duration: 700, onComplete: () => ft.destroy() });
 
-            // Sparkle effect
+            // Sparkle + splat effect
+            VFX.emit(nearest.sprite.x, nearest.sprite.y, FX.poopSplat);
             for (let i = 0; i < 5; i++) {
                 const sp = this.add.image(nearest.sprite.x + Phaser.Math.Between(-15,15), nearest.sprite.y + Phaser.Math.Between(-15,5), 'sparkle').setDepth(50).setScale(Phaser.Math.FloatBetween(0.5, 1.5));
                 this.tweens.add({ targets: sp, y: sp.y - 20, alpha: 0, scaleX: 0, scaleY: 0, duration: 400 + Math.random()*200, onComplete: () => sp.destroy() });
             }
 
-            // Remove poop sprite
+            // Shrink poop then destroy
             if (nearest.steam) nearest.steam.destroy();
-            nearest.sprite.destroy();
+            if (nearest.flies) nearest.flies.forEach(f => { if (f.active) f.destroy(); });
+            this.tweens.add({ targets: nearest.sprite, scaleX: 0, scaleY: 0, duration: 150, onComplete: () => nearest.sprite.destroy() });
 
             SndMgr.collect();
         }
@@ -3356,6 +3757,18 @@ class GameScene extends Phaser.Scene {
         this.comboMultiplier = 1;
     }
 
+    spawnDoubleJumpEffect() {
+        for (let i = 0; i < 4; i++) {
+            const px = this.player.x + Phaser.Math.Between(-12, 12);
+            const py = this.player.y + 45;
+            const puff = this.add.image(px, py, 'doublejump_puff').setDepth(15).setScale(0.6).setAlpha(0.8);
+            this.tweens.add({
+                targets: puff, y: py + 15, alpha: 0, scaleX: 1.2, scaleY: 1.2,
+                duration: 300, onComplete: () => puff.destroy()
+            });
+        }
+    }
+
     togglePause() {
         this.isPaused = !this.isPaused;
         if (this.isPaused) {
@@ -3372,6 +3785,7 @@ class GameScene extends Phaser.Scene {
     update(time, delta) {
       try {
         if (this.isPaused || this.isGameOver) return;
+        VFX.update(delta);
         const dt = delta / 1000;
         const spd = this.gameSpeed;
 
@@ -3414,14 +3828,82 @@ class GameScene extends Phaser.Scene {
         }
 
         // === PLAYER PHYSICS ===
-        if (!this.playerOnGround) {
-            this.playerVelY += 25 * dt; // gravity
+        if (!this.playerOnGround && !this.isOnPlatform) {
+            this.playerVelY += 35 * dt; // gravity
             this.player.y += this.playerVelY;
             if (this.player.y >= this.playerBaseY) {
+                VFX.emit(this.player.x, this.playerBaseY + 50, FX.landDust);
+                if (this.playerVelY > 4) this.cameras.main.shake(80, 0.003);
                 this.player.y = this.playerBaseY;
                 this.playerVelY = 0;
                 this.playerOnGround = true;
             }
+        }
+
+        // === PLATFORM COLLISION (one-way, top only) ===
+        this.isOnPlatform = false;
+        this.currentPlatform = null;
+
+        if (!this.playerOnGround && this.playerVelY > 0) {
+            const playerFeet = this.player.y + 50;
+            const prevFeet = playerFeet - this.playerVelY;
+            for (const plat of this.platforms) {
+                const platTop = plat.y;
+                const platLeft = plat.sprite.x - plat.width / 2;
+                const platRight = plat.sprite.x + plat.width / 2;
+                if (this.player.x >= platLeft && this.player.x <= platRight &&
+                    prevFeet <= platTop && playerFeet >= platTop) {
+                    this.player.y = platTop - 50;
+                    this.playerVelY = 0;
+                    this.isOnPlatform = true;
+                    this.currentPlatform = plat;
+                    this.canDoubleJump = false;
+                    this.hasDoubleJumped = false;
+                    // Scare pigeons on this platform
+                    this.activePigeons.forEach(pg => {
+                        if (!pg.flyingAway && pg.platRef === plat) {
+                            pg.flyingAway = true;
+                            SndMgr.pigeonFly();
+                            this.tweens.add({
+                                targets: pg.sprite, y: pg.sprite.y - 120, x: pg.sprite.x + 80, alpha: 0,
+                                duration: 800, ease: 'Quad.easeOut',
+                                onComplete: () => { pg.sprite.destroy(); pg.done = true; }
+                            });
+                        }
+                    });
+                    break;
+                }
+            }
+        }
+
+        // Standing on platform: track time + scroll with it
+        if (this.isOnPlatform && this.currentPlatform) {
+            this.platformTimer += delta;
+            if (this.platformTimer > 3000) {
+                this.dogs.forEach(() => SndMgr.bark());
+                this.showFloatingText(this.player.x, this.player.y - 30, 'Hunde rufen!', '#FF8800');
+                this.isOnPlatform = false;
+                this.currentPlatform = null;
+                this.platformTimer = 0;
+            }
+        }
+
+        // Fell off platform edge
+        if (this.isOnPlatform && this.currentPlatform) {
+            const plat = this.currentPlatform;
+            const platLeft = plat.sprite.x - plat.width / 2;
+            const platRight = plat.sprite.x + plat.width / 2;
+            if (this.player.x < platLeft - 10 || this.player.x > platRight + 10) {
+                this.isOnPlatform = false;
+                this.currentPlatform = null;
+            }
+        }
+
+        // Reset when on ground
+        if (this.playerOnGround) {
+            this.canDoubleJump = false;
+            this.hasDoubleJumped = false;
+            this.platformTimer = 0;
         }
 
         // === PLAYER MOVES LEFT/RIGHT (always, Mario-style) ===
@@ -3466,25 +3948,50 @@ class GameScene extends Phaser.Scene {
                 this.isSliding = false;
                 this.canCollect = true;
                 this.player.y = this.playerBaseY;
+                this.playerOnGround = true;
+                this.playerVelY = 0;
                 this.player.setTexture('boy_run_0');
                 this.showFloatingText(this.player.x, this.player.y - 20, 'Bäh!', '#8B4513');
             }
         }
 
+        // Safety: snap player to ground when they should be grounded
+        if (this.playerOnGround && !this.isSliding && !this.isCollecting && this.player.y < this.playerBaseY) {
+            this.player.y = this.playerBaseY;
+        }
+
         // Player run animation
-        if (this.playerOnGround && !this.isCollecting && !this.isSliding) {
+        if ((this.playerOnGround || this.isOnPlatform) && !this.isCollecting && !this.isSliding) {
             this.runTimer += delta;
             if (this.runTimer > 120) {
                 this.runTimer = 0;
                 this.runFrame = (this.runFrame + 1) % 4;
                 this.player.setTexture('boy_run_' + this.runFrame);
+                // Running dust puffs on each step
+                if (this.runFrame % 2 === 0) {
+                    VFX.emit(this.player.x - 10, this.player.y + 50, FX.dustPuff);
+                }
             }
         }
-        if (!this.playerOnGround && !this.isSliding) {
+        if (!this.playerOnGround && !this.isOnPlatform && !this.isSliding) {
             this.player.setTexture('boy_jump');
         }
 
+        // Slide sparks
+        if (this.isSliding && Math.random() < 0.3) {
+            VFX.emit(this.player.x - 20, GROUND_Y - 5, FX.slideSparks);
+        }
+
+        // Snow foot puffs
+        if (this.weather === 'snow' && this.playerOnGround && !this.isSliding && this.runFrame % 2 === 0 && Math.random() < 0.15) {
+            VFX.emit(this.player.x - 8, this.player.y + 50, FX.snowPuff);
+        }
+
         // === LEASH ===
+        // On platform: leash drains faster (dogs pulling from below)
+        if (this.isOnPlatform) {
+            this.leashTarget -= dt * 0.15;
+        }
         this.leashLength += (this.leashTarget - this.leashLength) * 0.03;
         this.leashLength = Phaser.Math.Clamp(this.leashLength, 0.3, 1.0);
         // Slowly recover leash
@@ -3566,6 +4073,25 @@ class GameScene extends Phaser.Scene {
                 }
             }
 
+            // Dog VFX: panting + drool
+            dog.pantTimer = (dog.pantTimer || 1500) - delta;
+            if (dog.pantTimer <= 0) {
+                dog.pantTimer = 1200 + Math.random() * 800;
+                if (this.weather === 'sunny' || this.weather === 'fog') {
+                    VFX.emit(dog.sprite.x - 12, dog.sprite.y - 8, FX.pant);
+                }
+            }
+            dog.droolTimer = (dog.droolTimer || 5000) - delta;
+            if (dog.droolTimer <= 0) {
+                dog.droolTimer = 4000 + Math.random() * 4000;
+                const droolChance = dog.info.breed === 'mops' ? 0.7 : 0.2;
+                if (Math.random() < droolChance) VFX.emit(dog.sprite.x - 10, dog.sprite.y, FX.drool);
+            }
+            // Pooping shake
+            if (dog.isPooping) {
+                dog.sprite.x += (Math.random() - 0.5) * 1.5;
+            }
+
             // Poop timer — only one dog poops at a time!
             dog.poopTimer -= delta;
             const anyonePooping = this.dogs.some(d => d.isPooping);
@@ -3594,7 +4120,10 @@ class GameScene extends Phaser.Scene {
 
         // === ACTIVE POOPS ===
         this.activePoops = this.activePoops.filter(p => {
-            if (p.collected || !p.sprite || !p.sprite.active) return false;
+            if (p.collected || !p.sprite || !p.sprite.active) {
+                if (p.flies) p.flies.forEach(f => { if (f.active) f.destroy(); });
+                return false;
+            }
 
             if (this.isBonus) {
                 // Bonus: poops stay in place but fade and disappear after 3.5 seconds
@@ -3609,7 +4138,7 @@ class GameScene extends Phaser.Scene {
                 }
                 if (p.bonusLife <= 0) {
                     p.sprite.destroy();
-                    if (p.steam) p.steam.destroy();
+                    if (p.steam) p.steam.destroy(); if (p.flies) p.flies.forEach(f => { if (f.active) f.destroy(); });
                     this.showFloatingText(p.sprite.x, GROUND_Y - 20, 'Weg!', '#999999');
                     this.poopsMissed++;
                     return false;
@@ -3618,6 +4147,13 @@ class GameScene extends Phaser.Scene {
                 // Normal: poops scroll left
                 p.sprite.x -= spd * dt;
                 if (p.steam && p.steam.active) p.steam.x = p.sprite.x;
+                // Flies orbit around big poops
+                if (p.flies) p.flies.forEach(f => { if (f.active) { f._angle += f._speed * dt; f.x = p.sprite.x + Math.cos(f._angle) * f._rx; f.y = p.sprite.y - 8 + Math.sin(f._angle) * f._ry + Math.sin(time * 0.01) * 2; }});
+                // Ongoing steam puffs
+                p.steamTimer = (p.steamTimer || 2000) - delta;
+                if (p.steamTimer <= 0 && p.sprite.active) { p.steamTimer = 1800 + Math.random() * 600; VFX.emit(p.sprite.x, p.sprite.y - 12, FX.poopSteam); }
+                // Occasional stink line
+                if (Math.random() < 0.001) VFX.emit(p.sprite.x + Phaser.Math.Between(-5,5), p.sprite.y - 10, FX.stinkLine);
 
                 // RAIN: poops dissolve!
                 if (this.weather === 'rain') {
@@ -3628,7 +4164,7 @@ class GameScene extends Phaser.Scene {
                     if (p.dissolveTimer <= 0) {
                         const px = p.sprite.x;
                         p.sprite.destroy();
-                        if (p.steam) p.steam.destroy();
+                        if (p.steam) p.steam.destroy(); if (p.flies) p.flies.forEach(f => { if (f.active) f.destroy(); });
                         this.poopsMissed++;
                         this.missedSinceLastEvent++;
                         this.checkMissedPoopEvents();
@@ -3639,7 +4175,7 @@ class GameScene extends Phaser.Scene {
 
                 if (p.sprite.x < -30) {
                     p.sprite.destroy();
-                    if (p.steam) p.steam.destroy();
+                    if (p.steam) p.steam.destroy(); if (p.flies) p.flies.forEach(f => { if (f.active) f.destroy(); });
                     this.poopsMissed++;
                     this.missedSinceLastEvent++;
                     this.checkMissedPoopEvents();
@@ -3697,6 +4233,7 @@ class GameScene extends Phaser.Scene {
                         }
                     });
                     // Wasser-Spritzer
+                    VFX.emit(obs.sprite.x, GROUND_Y - 5, FX.waterSplash);
                     for (let i = 0; i < 6; i++) {
                         const sp = this.add.image(obs.sprite.x + Phaser.Math.Between(-15, 15), GROUND_Y - 5, 'raindrop').setDepth(15).setScale(2).setAlpha(0.8);
                         this.tweens.add({ targets: sp, y: sp.y - 30 - Math.random()*20, x: sp.x + Phaser.Math.Between(-20, 20), alpha: 0, duration: 400, onComplete: () => sp.destroy() });
@@ -3755,6 +4292,166 @@ class GameScene extends Phaser.Scene {
             return true;
         });
 
+        // === PLATFORMS ===
+        if (!this.isBonus) {
+            this.platformSpawnTimer -= delta;
+            if (this.platformSpawnTimer <= 0) {
+                this.spawnPlatform();
+                this.platformSpawnTimer = 2000 + Math.random() * 3000;
+            }
+        }
+
+        // Scroll platforms + destroy offscreen
+        this.platforms = this.platforms.filter(plat => {
+            plat.sprite.x -= spd * dt;
+            if (plat.sprite.x < -200) {
+                plat.sprite.destroy();
+                return false;
+            }
+            return true;
+        });
+
+        // Scroll + collect platform coins
+        this.platformCoins = this.platformCoins.filter(coin => {
+            coin.sprite.x -= spd * dt;
+            coin.bobTimer += dt * 3;
+            coin.sprite.y = coin.baseY + Math.sin(coin.bobTimer) * 3;
+            // Occasional sparkle on coins
+            coin.sparkleTimer = (coin.sparkleTimer || 1500) - delta;
+            if (coin.sparkleTimer <= 0) { coin.sparkleTimer = 1200 + Math.random() * 1000; VFX.emit(coin.sprite.x, coin.sprite.y, { count: 1, color: 0xFFFFFF, speed: 8, lifetime: 300, size: 1.5, gravity: -5, depth: 13 }); }
+
+            if (coin.sprite.x < -30) { coin.sprite.destroy(); return false; }
+
+            // Magnet pull
+            if (this.magnetActive) {
+                const mdx = this.player.x - coin.sprite.x;
+                const mdy = this.player.y - coin.sprite.y;
+                const mdist = Math.sqrt(mdx * mdx + mdy * mdy);
+                if (mdist < 150) {
+                    coin.sprite.x += (mdx / mdist) * 200 * dt;
+                    coin.baseY += (mdy / mdist) * 200 * dt;
+                }
+            }
+
+            // Collect check (only when on platform or jumping, not walking on ground)
+            const dx = Math.abs(coin.sprite.x - this.player.x);
+            const dy = Math.abs(coin.sprite.y - this.player.y);
+            if (dx < 25 && dy < 55 && !this.playerOnGround) {
+                this.money += coin.value;
+                SndMgr.coinCollect();
+                this.showFloatingText(coin.sprite.x, coin.sprite.y - 10, `+${coin.value}€`, '#FFD700');
+                VFX.emit(coin.sprite.x, coin.sprite.y, FX.coinCollect);
+                // Coin flies to HUD counter
+                const flyC = this.add.circle(coin.sprite.x, coin.sprite.y, 4, 0xFFD700).setDepth(60);
+                this.tweens.add({ targets: flyC, x: 35, y: 15, scaleX: 0.5, scaleY: 0.5, duration: 400, ease: 'Cubic.easeIn', onComplete: () => { flyC.destroy(); this.hudMoney.setScale(1.3); this.tweens.add({ targets: this.hudMoney, scaleX: 1, scaleY: 1, duration: 200 }); }});
+                for (let i = 0; i < 3; i++) {
+                    const sp = this.add.image(coin.sprite.x + Phaser.Math.Between(-8, 8), coin.sprite.y, 'coin_sparkle').setDepth(50);
+                    this.tweens.add({ targets: sp, y: sp.y - 15, alpha: 0, duration: 300, onComplete: () => sp.destroy() });
+                }
+                coin.sprite.destroy();
+                return false;
+            }
+            return true;
+        });
+
+        // Scroll + collect bonuses
+        this.platformBonuses = this.platformBonuses.filter(bonus => {
+            bonus.sprite.x -= spd * dt;
+            bonus.bobTimer += dt * 2;
+            bonus.sprite.y = bonus.baseY + Math.sin(bonus.bobTimer) * 3;
+            // Golden poop glow
+            if (bonus.type === 'golden_poop' && Math.random() < 0.03) VFX.emit(bonus.sprite.x + Phaser.Math.Between(-8, 8), bonus.sprite.y + Phaser.Math.Between(-5, 5), FX.goldGlow);
+
+            if (bonus.sprite.x < -40) { bonus.sprite.destroy(); return false; }
+
+            const dx = Math.abs(bonus.sprite.x - this.player.x);
+            const dy = Math.abs(bonus.sprite.y - this.player.y);
+            if (dx < 25 && dy < 55 && !this.playerOnGround) {
+                SndMgr.bonusCollect();
+                if (bonus.type === 'golden_poop') {
+                    this.money += 5;
+                    this.showFloatingText(bonus.sprite.x, bonus.sprite.y - 10, '+5€ GOLD!', '#FFD700');
+                    VFX.emit(bonus.sprite.x, bonus.sprite.y, FX.coinCollect);
+                } else if (bonus.type === 'heart') {
+                    this.lives = Math.min(3, this.lives + 1);
+                    this.showFloatingText(bonus.sprite.x, bonus.sprite.y - 10, '+1 Leben!', '#FF3333');
+                    VFX.emit(bonus.sprite.x, bonus.sprite.y, FX.heartCollect);
+                    this.cameras.main.flash(100, 255, 100, 150, true);
+                } else if (bonus.type === 'vakuum') {
+                    this.vakuumActive = true;
+                    this.vakuumTimer = 5000;
+                    this.showFloatingText(bonus.sprite.x, bonus.sprite.y - 10, 'VAKUUM! 5s', '#33CC33');
+                    if (!this.magnetActive) SndMgr.startBonusPowerMusic();
+                } else if (bonus.type === 'magnet') {
+                    this.magnetActive = true;
+                    this.magnetTimer = 10000;
+                    this.showFloatingText(bonus.sprite.x, bonus.sprite.y - 10, 'MAGNET! 10s', '#CC0000');
+                    if (!this.vakuumActive) SndMgr.startBonusPowerMusic();
+                }
+                for (let i = 0; i < 5; i++) {
+                    const sp = this.add.image(bonus.sprite.x + Phaser.Math.Between(-10, 10), bonus.sprite.y + Phaser.Math.Between(-10, 5), 'sparkle').setDepth(50).setScale(Phaser.Math.FloatBetween(0.5, 1.5));
+                    this.tweens.add({ targets: sp, y: sp.y - 20, alpha: 0, scaleX: 0, scaleY: 0, duration: 400, onComplete: () => sp.destroy() });
+                }
+                bonus.sprite.destroy();
+                return false;
+            }
+            return true;
+        });
+
+        // Scroll + animate pigeons
+        this.activePigeons = this.activePigeons.filter(pg => {
+            if (pg.flyingAway) return !pg.done;
+            pg.sprite.x -= spd * dt;
+            if (pg.sprite.x < -40) { pg.sprite.destroy(); return false; }
+            return true;
+        });
+
+        // Magnet timer
+        if (this.magnetActive) {
+            this.magnetTimer -= delta;
+            if (this.magnetTimer <= 0) {
+                this.magnetActive = false;
+                if (!this.vakuumActive) SndMgr.startMusic();
+            }
+        }
+
+        // Vakuum timer: auto-collect nearby poops
+        if (this.vakuumActive) {
+            this.vakuumTimer -= delta;
+            if (this.vakuumTimer <= 0) {
+                this.vakuumActive = false;
+                if (!this.magnetActive) SndMgr.startMusic();
+            }
+            else {
+                this.activePoops.forEach(p => {
+                    if (!p.collected && Math.abs(p.sprite.x - this.player.x) < 100 &&
+                        Math.abs(p.sprite.y - (this.player.y + 30)) < 60) {
+                        p.collected = true;
+                        const value = p.type === 'gold' ? 10 : p.type === 'big' ? 2 : 1;
+                        this.money += value;
+                        this.poopsCollected++;
+                        if (p.type === 'gold') this.goldenCollected++;
+                        this.showFloatingText(p.sprite.x, p.sprite.y - 20, `+${value}€`, '#33CC33');
+                        for (let i = 0; i < 3; i++) {
+                            const sp = this.add.image(p.sprite.x + Phaser.Math.Between(-10, 10), p.sprite.y, 'sparkle').setDepth(50);
+                            this.tweens.add({ targets: sp, y: sp.y - 15, alpha: 0, duration: 300, onComplete: () => sp.destroy() });
+                        }
+                        p.sprite.destroy();
+                        if (p.steam) p.steam.destroy(); if (p.flies) p.flies.forEach(f => { if (f.active) f.destroy(); });
+                    }
+                });
+            }
+        }
+
+        // === PLAYER COLOR FLASH for active bonuses ===
+        if (this.vakuumActive || this.magnetActive) {
+            const colors = [0xFF3333, 0x33FF33, 0x3333FF, 0xFFFF33, 0xFF33FF, 0x33FFFF, 0xFF8800, 0x8800FF];
+            const ci = Math.floor(this.time.now / 80) % colors.length;
+            this.player.setTint(colors[ci]);
+        } else {
+            this.player.clearTint();
+        }
+
         // === NPCs ===
         this.npcs = this.npcs.filter(npc => {
             if (!npc.sprite || !npc.sprite.active) {
@@ -3765,7 +4462,7 @@ class GameScene extends Phaser.Scene {
             if (npc.type === 'ordnungsamt' || npc.type === 'oma') {
                 npc.sprite.x += (spd * 0.3) * dt; // chasing
                 if (npc.speech) npc.speech.x = npc.sprite.x;
-                if (npc.speech) npc.speech.y = npc.sprite.y - 40;
+                if (npc.speech) npc.speech.y = npc.sprite.y - 80;
 
                 // Walk animation
                 npc.animTimer = (npc.animTimer || 0) + delta;
@@ -3934,10 +4631,19 @@ class GameScene extends Phaser.Scene {
             this.weatherTimer = 50;
             if (this.weather === 'rain') {
                 const drop = this.add.image(Math.random() * GW, -5, 'raindrop').setDepth(40).setAlpha(0.6);
-                this.tweens.add({ targets: drop, y: GH + 10, x: drop.x - 30, duration: 600 + Math.random()*200, onComplete: () => drop.destroy() });
+                const dropX = drop.x - 30;
+                this.tweens.add({ targets: drop, y: GH + 10, x: dropX, duration: 600 + Math.random()*200, onComplete: () => {
+                    // Rain impact ring on the ground
+                    if (drop.y > GROUND_Y - 20) {
+                        const ring = this.add.circle(dropX, GROUND_Y + 5, 2, 0x88CCEE, 0).setDepth(4).setStrokeStyle(1, 0x88CCEE, 0.5);
+                        this.tweens.add({ targets: ring, scaleX: 3, scaleY: 2, alpha: 0, duration: 400, onComplete: () => ring.destroy() });
+                    }
+                    drop.destroy();
+                }});
             } else if (this.weather === 'snow') {
                 const flake = this.add.image(Math.random() * GW, -5, 'snowflake').setDepth(40).setAlpha(0.8);
-                this.tweens.add({ targets: flake, y: GH + 10, x: flake.x + Phaser.Math.Between(-40, 40), duration: 2000 + Math.random()*1000, onComplete: () => flake.destroy() });
+                const dur = 2000 + Math.random() * 1000;
+                this.tweens.add({ targets: flake, y: GH + 10, x: flake.x + Phaser.Math.Between(-40, 40), angle: Phaser.Math.Between(-180, 180), duration: dur, onComplete: () => flake.destroy() });
             } else if (this.weather === 'fog') {
                 // Spawn thick fog clouds that drift across, obscuring everything
                 if (this.fogClouds.length < 6 && Math.random() < 0.3) {
@@ -3958,6 +4664,33 @@ class GameScene extends Phaser.Scene {
                 if (fc.x < -200) { fc.destroy(); return false; }
                 return true;
             });
+        }
+
+        // === AMBIENT EFFECTS ===
+        // Falling leaves (every 5-10 seconds)
+        this.leafTimer = (this.leafTimer || 5000) - delta;
+        if (this.leafTimer <= 0) {
+            this.leafTimer = 5000 + Math.random() * 5000;
+            const leafColor = (this.levelNum >= 4) ? Phaser.Math.Between(0, 1) ? 0xCC6600 : 0xDD8833 : 0x44AA33;
+            const leaf = this.add.circle(GW + 10, Phaser.Math.Between(20, 150), 3, leafColor).setDepth(35);
+            const dur = 3000 + Math.random() * 2000;
+            const amplitude = 30 + Math.random() * 40;
+            this.tweens.add({ targets: leaf, x: -20, duration: dur, ease: 'Linear', onComplete: () => leaf.destroy() });
+            this.tweens.add({ targets: leaf, y: GROUND_Y + 10, duration: dur, ease: 'Sine.easeIn' });
+            // Sine wave wobble
+            this.tweens.add({ targets: leaf, angle: 360, duration: dur * 0.4, repeat: 3 });
+        }
+        // Bird flock (every 20-30 seconds)
+        this.birdTimer = (this.birdTimer || 15000) - delta;
+        if (this.birdTimer <= 0) {
+            this.birdTimer = 20000 + Math.random() * 10000;
+            const by = Phaser.Math.Between(30, 120);
+            for (let bi = 0; bi < 5; bi++) {
+                const bx = GW + 30 + bi * 15;
+                const birdY = by + Math.abs(bi - 2) * 8; // V-formation
+                const bird = this.add.text(bx, birdY, 'v', { fontSize: '8px', color: '#333' }).setDepth(1);
+                this.tweens.add({ targets: bird, x: -30, duration: 4000 + Math.random() * 1000, ease: 'Linear', onComplete: () => bird.destroy() });
+            }
         }
 
         // === HUD UPDATE ===
@@ -4016,15 +4749,27 @@ class GameScene extends Phaser.Scene {
 
         this.time.delayedCall(600, () => {
             dog.isPooping = false;
-            // Spawn poop at dog's position, but NOT on obstacles!
+            // Relief hearts
+            for (let hi = 0; hi < 2; hi++) {
+                const h = this.add.text(dog.sprite.x + Phaser.Math.Between(-8, 8), dog.sprite.y - 20, '\u2764', { fontSize: '10px' }).setDepth(15);
+                this.tweens.add({ targets: h, y: h.y - 25, alpha: 0, duration: 600, delay: hi * 150, onComplete: () => h.destroy() });
+            }
+            // Spawn poop at dog's position, but NOT on obstacles or other poops!
             let poopX = dog.sprite.x;
-            const tooClose = this.obstacles.some(obs =>
+            const tooCloseObs = this.obstacles.some(obs =>
                 obs.sprite && obs.sprite.active && Math.abs(obs.sprite.x - poopX) < 40
             );
-            if (tooClose) {
-                // Shift poop to clear space (behind the obstacle)
-                poopX -= 50;
+            const tooClosePoop = this.activePoops.some(p =>
+                p.sprite && p.sprite.active && !p.collected && Math.abs(p.sprite.x - poopX) < 50
+            );
+            if (tooCloseObs || tooClosePoop) {
+                poopX -= 60;
                 if (poopX < PLAYER_X + 30) poopX = PLAYER_X + 30;
+                // If still too close to another poop, skip spawning
+                const stillTooClose = this.activePoops.some(p =>
+                    p.sprite && p.sprite.active && !p.collected && Math.abs(p.sprite.x - poopX) < 40
+                );
+                if (stillTooClose) { dog.isPooping = false; return; }
             }
             const r = Math.random();
             const goldChance = this.isBonus ? 0.15 : 0.02; // Bonus: 15% golden poops!
@@ -4033,8 +4778,11 @@ class GameScene extends Phaser.Scene {
             const poopDepth = this.isBonus ? 12 : 5;
             const poopSprite = this.add.image(poopX, GROUND_Y - 18, texKey).setDepth(poopDepth);
 
-            // Steam
-            let steam = null;
+            // Plop effect: scale bounce in
+            poopSprite.setScale(0);
+            this.tweens.add({ targets: poopSprite, scaleX: 1, scaleY: 1, duration: 250, ease: 'Back.easeOut' });
+
+            // Steam (initial burst + ongoing)
             const steamContainer = this.add.container(poopSprite.x, poopSprite.y - 10).setDepth(poopDepth + 1);
             this.time.addEvent({ delay: 500, repeat: 5, callback: () => {
                 if (!poopSprite.active) return;
@@ -4043,11 +4791,34 @@ class GameScene extends Phaser.Scene {
                 this.tweens.add({ targets: s, y: s.y - 15, alpha: 0, duration: 600, onComplete: () => s.destroy() });
             }});
 
-            this.activePoops.push({ sprite: poopSprite, type, collected: false, steppedOn: false, steam: steamContainer });
+            // Stink lines (green wavy particles rising)
+            VFX.emit(poopX, GROUND_Y - 22, FX.stinkLine);
+            VFX.emit(poopX + 5, GROUND_Y - 20, FX.stinkLine);
+
+            // Flies circling big poops
+            const flies = [];
+            if (type === 'big') {
+                for (let fi = 0; fi < 2; fi++) {
+                    const fly = this.add.circle(poopX, GROUND_Y - 25, 1.5, 0x222222).setDepth(poopDepth + 1);
+                    fly._angle = Math.random() * Math.PI * 2;
+                    fly._speed = 2 + Math.random();
+                    fly._rx = 12 + Math.random() * 5;
+                    fly._ry = 8 + Math.random() * 3;
+                    flies.push(fly);
+                }
+            }
+
+            this.activePoops.push({ sprite: poopSprite, type, collected: false, steppedOn: false, steam: steamContainer, steamTimer: 2000, flies });
         });
     }
 
     spawnObstacle() {
+        // Don't spawn if a platform is too close at the spawn position
+        const tooCloseToPlat = this.platforms.some(p =>
+            p.sprite && p.sprite.active && Math.abs(p.sprite.x - (GW + 50)) < 120
+        );
+        if (tooCloseToPlat) return;
+
         const types = ['puddle', 'hole', 'bicycle', 'barrier'];
         const type = types[Math.floor(Math.random() * types.length)];
         let y = GROUND_Y;
@@ -4081,6 +4852,111 @@ class GameScene extends Phaser.Scene {
         }
     }
 
+    spawnPlatform() {
+        // Available types based on level
+        const platTypes = [];
+        // Level 1-2: only bench
+        platTypes.push({ type: 'bench', weight: 30 });
+        if (this.levelNum >= 3) {
+            platTypes.push({ type: 'mailbox', weight: 20 });
+        }
+        if (this.levelNum >= 4) {
+            platTypes.push({ type: 'container', weight: 15 });
+        }
+        if (this.levelNum >= 5) {
+            platTypes.push({ type: 'busstop', weight: 30 });
+            platTypes.push({ type: 'van', weight: 5 });
+        }
+
+        // Weighted random selection
+        const totalWeight = platTypes.reduce((s, t) => s + t.weight, 0);
+        let r = Math.random() * totalWeight;
+        let chosen = platTypes[0].type;
+        for (const pt of platTypes) {
+            r -= pt.weight;
+            if (r <= 0) { chosen = pt.type; break; }
+        }
+
+        // Min distance to last platform
+        const lastPlat = this.platforms[this.platforms.length - 1];
+        if (lastPlat && lastPlat.sprite.x > GW - 300) return;
+
+        // Don't spawn on top of an obstacle
+        const tooCloseToObs = this.obstacles.some(obs =>
+            obs.sprite && obs.sprite.active && Math.abs(obs.sprite.x - (GW + 100)) < 120
+        );
+        if (tooCloseToObs) return;
+
+        // Never two high platforms in a row
+        const highTypes = ['busstop', 'van'];
+        if (lastPlat && highTypes.includes(lastPlat.type) && highTypes.includes(chosen)) {
+            chosen = 'bench';
+        }
+
+        // Platform specs
+        const specs = {
+            bench:    { tex: 'platform_bench',    w: 80,  h: 35,  yOff: 30,  coins: [1, 3], pigeonChance: 0.3 },
+            mailbox:  { tex: 'platform_mailbox',   w: 40,  h: 80,  yOff: 70,  coins: [1, 2], pigeonChance: 0 },
+            container:{ tex: 'platform_container', w: 70,  h: 60,  yOff: 80,  coins: [2, 3], pigeonChance: 0 },
+            busstop:  { tex: 'platform_busstop',   w: 120, h: 100, yOff: 120, coins: [3, 5], pigeonChance: 0 },
+            van:      { tex: 'platform_van',       w: 150, h: 80,  yOff: 90,  coins: [5, 8], pigeonChance: 0 },
+        };
+
+        const spec = specs[chosen];
+        const platX = GW + 100;
+        const platTopY = GROUND_Y - spec.yOff;
+        const spriteY = platTopY + spec.h / 2;
+
+        const sprite = this.add.image(platX, spriteY, spec.tex).setDepth(4);
+        const plat = { sprite, type: chosen, y: platTopY, width: spec.w, height: spec.h };
+        this.platforms.push(plat);
+
+        // Double jump tutorial
+        if (this.levelNum >= 3 && spec.yOff > 50 && !this.doubleJumpTutorialShown) {
+            this.doubleJumpTutorialShown = true;
+            const save = SaveMgr.load();
+            save.doubleJumpTutorial = true;
+            SaveMgr.save(save);
+            const tutBg = this.add.rectangle(GW / 2, GH / 2 - 40, 360, 50, 0x000000, 0.8).setDepth(200);
+            const tutTxt = this.add.text(GW / 2, GH / 2 - 40, 'DOPPELSPRUNG! 2x Springen = höher!',
+                { fontFamily: 'monospace', fontSize: '16px', color: '#FFDD00', stroke: '#333', strokeThickness: 3 }).setOrigin(0.5).setDepth(200);
+            this.time.delayedCall(3000, () => {
+                this.tweens.add({ targets: [tutBg, tutTxt], alpha: 0, duration: 500, onComplete: () => { tutBg.destroy(); tutTxt.destroy(); }});
+            });
+        }
+
+        // Spawn coins on platform
+        const numCoins = Phaser.Math.Between(spec.coins[0], spec.coins[1]);
+        const spacing = spec.w / (numCoins + 1);
+        for (let i = 0; i < numCoins; i++) {
+            const cx = platX - spec.w / 2 + spacing * (i + 1);
+            const cy = platTopY - 20;
+            const coinSprite = this.add.image(cx, cy, 'coin_platform').setDepth(12);
+            this.platformCoins.push({ sprite: coinSprite, baseY: cy, bobTimer: Math.random() * 6, value: 1 });
+        }
+
+        // Chance for bonus item in the middle
+        const bonusChance = chosen === 'van' ? 0.3 : chosen === 'busstop' ? 0.2 : 0.1;
+        if (Math.random() < bonusChance) {
+            const bonusTypes = ['golden_poop', 'heart', 'vakuum', 'magnet'];
+            const bonusType = bonusTypes[Math.floor(Math.random() * bonusTypes.length)];
+            const texMap = { golden_poop: 'bonus_golden_poop', heart: 'bonus_heart', vakuum: 'bonus_vakuum', magnet: 'bonus_magnet' };
+            const bx = platX;
+            const by = platTopY - 25;
+            const bonusSprite = this.add.image(bx, by, texMap[bonusType]).setDepth(12);
+            this.platformBonuses.push({ sprite: bonusSprite, type: bonusType, baseY: by, bobTimer: Math.random() * 6 });
+        }
+
+        // Pigeon on bench
+        if (chosen === 'bench' && Math.random() < spec.pigeonChance) {
+            const px = platX + Phaser.Math.Between(-15, 15);
+            const py = platTopY - 10;
+            const pigeonSprite = this.add.image(px, py, 'pigeon').setDepth(12);
+            const pigeon = { sprite: pigeonSprite, platRef: plat, flyingAway: false, done: false };
+            this.activePigeons.push(pigeon);
+        }
+    }
+
     checkMissedPoopEvents() {
         // No penalties in bonus level!
         if (this.isBonus) return;
@@ -4102,20 +4978,28 @@ class GameScene extends Phaser.Scene {
 
     spawnOrdnungsamt() {
         SndMgr.siren();
+        // Blue flashing warning light
+        const blueFlash = this.add.rectangle(GW / 2, 0, GW, 6, 0x3333FF).setDepth(60).setAlpha(0);
+        this.tweens.add({ targets: blueFlash, alpha: 0.8, duration: 100, yoyo: true, repeat: 5, onComplete: () => blueFlash.destroy() });
         const sprite = this.add.sprite(-40, GROUND_Y - 50, 'ordnungsamt_run_0').setDepth(10);
-        const speech = this.add.text(sprite.x, sprite.y - 40, 'HALT! STEHEN BLEIBEN!',
-            { fontFamily: 'monospace', fontSize: '11px', color: '#FF4444', backgroundColor: '#FFFFFF', padding: { x: 4, y: 2 } }).setDepth(11).setOrigin(0.5);
+        const speech = this.add.text(sprite.x, sprite.y - 80, 'HALT! STEHEN BLEIBEN!',
+            { fontFamily: 'monospace', fontSize: '12px', color: '#FF4444', backgroundColor: '#FFFFFFDD', padding: { x: 6, y: 3 }, stroke: '#CC0000', strokeThickness: 0.5 }).setDepth(15).setOrigin(0.5, 1);
         this.npcs.push({ sprite, type: 'ordnungsamt', timer: 8000, speech, animTimer: 0 });
         this.showFloatingText(GW/2, 80, '🚔 Ordnungsamt!', '#FF4444');
     }
 
     spawnOma() {
         SndMgr.bonk();
+        // Red warning exclamation at screen edge
+        const warn = this.add.text(15, GH / 2, '⚠', { fontSize: '28px' }).setDepth(60).setAlpha(0);
+        this.tweens.add({ targets: warn, alpha: 1, duration: 150, yoyo: true, repeat: 3, onComplete: () => warn.destroy() });
         const sprite = this.add.sprite(-40, GROUND_Y - 50, 'oma_run_0').setDepth(10);
         const pan = this.add.sprite(-40, GROUND_Y - 95, 'pan').setDepth(11);
+        // Pan metallic flash
+        this.tweens.add({ targets: pan, alpha: { from: 0.5, to: 1 }, duration: 100, yoyo: true, repeat: 4 });
         const line = OMA_LINES[Math.floor(Math.random() * OMA_LINES.length)];
-        const speech = this.add.text(sprite.x, sprite.y - 40, line,
-            { fontFamily: 'monospace', fontSize: '11px', color: '#663399', backgroundColor: '#FFFFFF', padding: { x: 4, y: 2 } }).setDepth(11).setOrigin(0.5);
+        const speech = this.add.text(sprite.x, sprite.y - 80, line,
+            { fontFamily: 'monospace', fontSize: '12px', color: '#663399', backgroundColor: '#FFFFFFDD', padding: { x: 6, y: 3 }, stroke: '#440066', strokeThickness: 0.5 }).setDepth(15).setOrigin(0.5, 1);
         this.npcs.push({ sprite, type: 'oma', timer: 6000, speech, pan, animTimer: 0 });
     }
 
@@ -4173,8 +5057,11 @@ class GameScene extends Phaser.Scene {
         if (this.invincible || this.isGameOver) return;
         this.lives--;
         this.cameras.main.shake(300, 0.02);
+        this.cameras.main.flash(150, 255, 50, 50, true);
         SndMgr.bonk();
         this.showFloatingText(this.player.x, this.player.y - 30, 'AUTSCH!', '#FF4444');
+        // Cartoon stars above head
+        VFX.emit(this.player.x, this.player.y - 55, FX.hitStars);
 
         // Invincibility frames (player blinks)
         this.invincible = true;
@@ -4202,8 +5089,19 @@ class GameScene extends Phaser.Scene {
             const fine = 5;
             this.money = Math.max(0, this.money - fine);
             this.cameras.main.shake(300, 0.02);
+            this.cameras.main.flash(200, 255, 0, 0, true);
             SndMgr.siren();
             this.showFloatingText(this.player.x, this.player.y - 50, `STRAFZETTEL! -${fine}€`, '#FF0000');
+            // Ticket flies in from top
+            const ticket = this.add.text(GW / 2, -40, '📋 STRAFE!', { fontSize: '22px', color: '#FF0000', fontFamily: 'monospace', stroke: '#000', strokeThickness: 3 }).setOrigin(0.5).setDepth(60).setAngle(-15);
+            this.tweens.add({ targets: ticket, y: GH / 2 - 30, duration: 300, ease: 'Bounce.easeOut', onComplete: () => {
+                this.tweens.add({ targets: ticket, alpha: 0, scaleX: 2, scaleY: 2, duration: 600, delay: 500, onComplete: () => ticket.destroy() });
+            }});
+            // Coins fly away from counter
+            for (let ci = 0; ci < 4; ci++) {
+                const c = this.add.circle(35, 15, 3, 0xFFD700).setDepth(60);
+                this.tweens.add({ targets: c, x: 35 + Phaser.Math.Between(-50, 50), y: 15 + Phaser.Math.Between(20, 60), alpha: 0, duration: 500, delay: ci * 80, onComplete: () => c.destroy() });
+            }
             if (this.tickets >= 3) {
                 this.gameOver();
             }
@@ -4212,9 +5110,16 @@ class GameScene extends Phaser.Scene {
             const stolen = this.money;
             this.money = 0;
             this.cameras.main.shake(400, 0.025);
+            this.cameras.main.flash(200, 100, 0, 150, true);
             SndMgr.bonk();
+            VFX.emit(this.player.x, this.player.y - 40, FX.hitStars);
             if (stolen > 0) {
                 this.showFloatingText(this.player.x, this.player.y - 50, `BONK! -${stolen}€ ALLES WEG!`, '#663399');
+                // Money flies to Oma
+                for (let ci = 0; ci < Math.min(stolen, 8); ci++) {
+                    const c = this.add.circle(this.player.x, this.player.y - 20, 3, 0xFFD700).setDepth(60);
+                    this.tweens.add({ targets: c, x: npc.sprite.x, y: npc.sprite.y - 20, alpha: 0, duration: 400, delay: ci * 60, onComplete: () => c.destroy() });
+                }
             } else {
                 this.showFloatingText(this.player.x, this.player.y - 50, 'BONK! Nichts zu holen!', '#663399');
             }
@@ -4235,12 +5140,12 @@ class GameScene extends Phaser.Scene {
         // Clear leash
         if (this.leashGfx) this.leashGfx.clear();
 
-        // Clean up obstacles, poops, NPCs
+        // Clean up obstacles, poops, NPCs, platforms
         this.obstacles.forEach(o => { if (o.sprite) o.sprite.destroy(); });
         this.obstacles = [];
         this.activePoops.forEach(p => {
             if (p.sprite) p.sprite.destroy();
-            if (p.steam) p.steam.destroy();
+            if (p.steam) p.steam.destroy(); if (p.flies) p.flies.forEach(f => { if (f.active) f.destroy(); });
         });
         this.npcs.forEach(n => {
             if (n.sprite) n.sprite.destroy();
@@ -4248,6 +5153,16 @@ class GameScene extends Phaser.Scene {
             if (n.pan) n.pan.destroy();
         });
         this.npcs = [];
+        this.platforms.forEach(p => { if (p.sprite) p.sprite.destroy(); });
+        this.platforms = [];
+        this.platformCoins.forEach(c => { if (c.sprite) c.sprite.destroy(); });
+        this.platformCoins = [];
+        this.platformBonuses.forEach(b => { if (b.sprite) b.sprite.destroy(); });
+        this.platformBonuses = [];
+        this.activePigeons.forEach(pg => { if (pg.sprite) pg.sprite.destroy(); });
+        this.activePigeons = [];
+        this.magnetActive = false;
+        this.vakuumActive = false;
 
         if (this.isBonus) {
             SndMgr.fanfare();
@@ -4485,20 +5400,22 @@ class GameScene extends Phaser.Scene {
         } else if (isNextBonus) {
             this.add.text(GW/2, GH/2 + 130, 'Ab in den Hundepark!', { fontFamily: 'monospace', fontSize: '12px', color: '#FFD700', stroke: '#333', strokeThickness: 2 }).setOrigin(0.5).setDepth(200);
         }
+        const tp = this.carryPoops + this.poopsCollected; // total poops across all levels
         btnNext.on('pointerdown', () => {
             SndMgr.click();
             if (this.isBonus) {
-                this.scene.restart({ level: this.levelNum + 1, money: totalMoney });
+                this.scene.restart({ level: this.levelNum + 1, money: totalMoney, totalPoops: tp });
             } else if (isNextBoss) {
                 this.scene.start('Boss', {
                     level: this.levelNum,
                     bags: this.poopsCollected,
-                    money: totalMoney
+                    money: totalMoney,
+                    totalPoops: tp
                 });
             } else if (this.levelNum % 3 === 0) {
-                this.scene.restart({ level: this.levelNum, money: totalMoney, bonus: true });
+                this.scene.restart({ level: this.levelNum, money: totalMoney, bonus: true, totalPoops: tp });
             } else {
-                this.scene.restart({ level: this.levelNum + 1, money: totalMoney });
+                this.scene.restart({ level: this.levelNum + 1, money: totalMoney, totalPoops: tp });
             }
         });
         btnNext.on('pointerover', () => btnNext.setScale(1.1));
@@ -4520,7 +5437,7 @@ class GameScene extends Phaser.Scene {
         this.time.delayedCall(1000, () => {
             this.scene.start('GameOver', {
                 money: this.money, // Gesamtes Geld über alle Level
-                poopsCollected: this.poopsCollected,
+                poopsCollected: this.carryPoops + this.poopsCollected, // Gesamt über alle Level
                 poopsMissed: this.poopsMissed,
                 level: this.levelNum,
                 tickets: this.tickets,
@@ -4538,6 +5455,7 @@ class BossScene extends Phaser.Scene {
         this.levelNum = data.level || 5;
         this.bags = data.bags || 10;
         this.money = data.money || 0;
+        this.totalPoops = data.totalPoops || 0;
     }
 
     create() {
@@ -5845,7 +6763,8 @@ class BossScene extends Phaser.Scene {
                                         SndMgr.click();
                                         this.scene.start('Game', {
                                             level: this.levelNum + 1,
-                                            money: this.money + bonusMoney
+                                            money: this.money + bonusMoney,
+                                            totalPoops: this.totalPoops
                                         });
                                     });
                                     btnNext.on('pointerover', () => btnNext.setScale(1.1));
@@ -5894,19 +6813,27 @@ class BossScene extends Phaser.Scene {
                 this.scene.start('Boss', {
                     level: this.levelNum,
                     bags: this.bags, // original bag count
-                    money: this.money
+                    money: this.money,
+                    totalPoops: this.totalPoops
                 });
             });
             btnRetry.on('pointerover', () => btnRetry.setScale(1.1));
             btnRetry.on('pointerout', () => btnRetry.setScale(1));
 
-            const btnMenu = this.add.text(GW/2, GH/2 + 60, '  ZURÜCK ZUM MENÜ  ', {
+            const btnMenu = this.add.text(GW/2, GH/2 + 60, '  AUFGEBEN  ', {
                 fontFamily: 'monospace', fontSize: '14px', color: '#FFF',
                 backgroundColor: '#666', padding: { x: 12, y: 6 }
             }).setOrigin(0.5).setDepth(201).setInteractive({ useHandCursor: true });
             btnMenu.on('pointerdown', () => {
                 SndMgr.click();
-                this.scene.start('Menu');
+                this.scene.start('GameOver', {
+                    money: this.money,
+                    poopsCollected: this.totalPoops,
+                    poopsMissed: 0,
+                    level: this.levelNum,
+                    tickets: 0,
+                    lives: 0
+                });
             });
             btnMenu.on('pointerover', () => btnMenu.setScale(1.1));
             btnMenu.on('pointerout', () => btnMenu.setScale(1));
@@ -6034,6 +6961,13 @@ class HighscoreScene extends Phaser.Scene {
     constructor() { super('Highscore'); }
     create() {
         this.cameras.main.setBackgroundColor(0x222244);
+        this.drawList();
+    }
+
+    drawList() {
+        // Clear everything
+        this.children.removeAll(true);
+
         const save = SaveMgr.load();
 
         this.add.text(GW/2, 30, 'HIGHSCORES', { fontFamily: 'monospace', fontSize: '30px', color: '#FFDD00', stroke: '#333', strokeThickness: 3 }).setOrigin(0.5);
@@ -6062,11 +6996,216 @@ class HighscoreScene extends Phaser.Scene {
             });
         }
 
-        const btnBack = this.add.text(GW/2, GH - 40, '  ZURÜCK  ',
+        // === SYNC BUTTONS ===
+        const smallBtn = { fontFamily: 'monospace', fontSize: '13px', color: '#FFF', padding: { x: 10, y: 5 } };
+
+        const btnShare = this.add.text(GW/2 - 120, GH - 85, ' CODE ERZEUGEN ', { ...smallBtn, backgroundColor: '#336699' })
+            .setOrigin(0.5).setInteractive({ useHandCursor: true });
+        btnShare.on('pointerdown', () => { SndMgr.click(); this.showShareCode(); });
+
+        const btnLoad = this.add.text(GW/2 + 120, GH - 85, ' CODE EINGEBEN ', { ...smallBtn, backgroundColor: '#996633' })
+            .setOrigin(0.5).setInteractive({ useHandCursor: true });
+        btnLoad.on('pointerdown', () => { SndMgr.click(); this.showLoadCode(); });
+
+        this.add.text(GW/2, GH - 65, 'Scores zwischen Geräten teilen!',
+            { fontFamily: 'monospace', fontSize: '10px', color: '#666' }).setOrigin(0.5);
+
+        const btnBack = this.add.text(GW/2, GH - 30, '  ZURÜCK  ',
             { fontFamily: 'monospace', fontSize: '20px', color: '#FFF', backgroundColor: '#555', padding: { x: 16, y: 8 } }).setOrigin(0.5).setInteractive({ useHandCursor: true });
         btnBack.on('pointerdown', () => { SndMgr.click(); this.scene.start('Menu'); });
-        btnBack.on('pointerover', () => btnBack.setScale(1.1));
-        btnBack.on('pointerout', () => btnBack.setScale(1));
+        [btnShare, btnLoad, btnBack].forEach(b => {
+            b.on('pointerover', () => b.setScale(1.05));
+            b.on('pointerout', () => b.setScale(1));
+        });
+    }
+
+    showShareCode() {
+        const save = SaveMgr.load();
+        if (save.highscores.length === 0) {
+            this.showMessage('Keine Highscores zum Teilen!', '#FF8844');
+            return;
+        }
+        // Encode highscores as compact code
+        const data = { h: save.highscores, t: save.totalMoney, m: save.maxLevel };
+        const code = btoa(JSON.stringify(data));
+
+        const overlay = this.add.rectangle(GW/2, GH/2, GW, GH, 0x000000, 0.85).setDepth(300).setInteractive();
+        this.add.text(GW/2, 80, 'DEIN HIGHSCORE-CODE:', {
+            fontFamily: 'monospace', fontSize: '16px', color: '#FFDD00'
+        }).setOrigin(0.5).setDepth(301);
+
+        this.add.text(GW/2, 110, 'Diesen Code auf dem anderen Gerät eingeben:',{
+            fontFamily: 'monospace', fontSize: '11px', color: '#AAA'
+        }).setOrigin(0.5).setDepth(301);
+
+        // Show code in a box (wrapped, selectable area)
+        const codeBox = this.add.rectangle(GW/2, GH/2 - 10, GW - 60, 180, 0x333355).setDepth(301);
+        const codeTxt = this.add.text(GW/2, GH/2 - 10, code, {
+            fontFamily: 'monospace', fontSize: '11px', color: '#88FF88',
+            wordWrap: { width: GW - 80 }, align: 'center'
+        }).setOrigin(0.5).setDepth(302);
+
+        // Copy button
+        const btnCopy = this.add.text(GW/2, GH/2 + 110, ' IN ZWISCHENABLAGE KOPIEREN ', {
+            fontFamily: 'monospace', fontSize: '14px', color: '#FFF',
+            backgroundColor: '#44AA44', padding: { x: 12, y: 6 }
+        }).setOrigin(0.5).setDepth(301).setInteractive({ useHandCursor: true });
+        btnCopy.on('pointerdown', () => {
+            SndMgr.click();
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(code).then(() => {
+                    btnCopy.setText(' KOPIERT! ').setBackgroundColor('#888');
+                }).catch(() => {
+                    // Fallback: prompt
+                    prompt('Code kopieren:', code);
+                });
+            } else {
+                prompt('Code kopieren:', code);
+            }
+        });
+
+        const btnClose = this.add.text(GW/2, GH/2 + 160, ' ZURÜCK ', {
+            fontFamily: 'monospace', fontSize: '16px', color: '#FFF',
+            backgroundColor: '#555', padding: { x: 12, y: 6 }
+        }).setOrigin(0.5).setDepth(301).setInteractive({ useHandCursor: true });
+        btnClose.on('pointerdown', () => { SndMgr.click(); this.drawList(); });
+    }
+
+    showLoadCode() {
+        const overlay = this.add.rectangle(GW/2, GH/2, GW, GH, 0x000000, 0.85).setDepth(300).setInteractive();
+        this.add.text(GW/2, 60, 'CODE EINGEBEN:', {
+            fontFamily: 'monospace', fontSize: '16px', color: '#FFDD00'
+        }).setOrigin(0.5).setDepth(301);
+
+        this.add.text(GW/2, 85, 'Code vom anderen Gerät hier eintippen:',{
+            fontFamily: 'monospace', fontSize: '11px', color: '#AAA'
+        }).setOrigin(0.5).setDepth(301);
+
+        // Input field using on-screen letter buttons
+        let inputCode = '';
+        const inputBox = this.add.rectangle(GW/2, 120, GW - 60, 36, 0x333355).setDepth(301);
+        const inputTxt = this.add.text(GW/2, 120, '|', {
+            fontFamily: 'monospace', fontSize: '12px', color: '#88FF88'
+        }).setOrigin(0.5).setDepth(302);
+
+        // Paste button (fastest on mobile)
+        const btnPaste = this.add.text(GW/2, 155, ' AUS ZWISCHENABLAGE EINFÜGEN ', {
+            fontFamily: 'monospace', fontSize: '13px', color: '#FFF',
+            backgroundColor: '#996633', padding: { x: 10, y: 5 }
+        }).setOrigin(0.5).setDepth(301).setInteractive({ useHandCursor: true });
+        btnPaste.on('pointerdown', () => {
+            SndMgr.click();
+            if (navigator.clipboard && navigator.clipboard.readText) {
+                navigator.clipboard.readText().then(txt => {
+                    inputCode = txt.trim();
+                    inputTxt.setText(inputCode.substring(0, 60) + (inputCode.length > 60 ? '...' : '') + '|');
+                }).catch(() => {
+                    // Fallback
+                    const txt = prompt('Code einfügen:');
+                    if (txt) {
+                        inputCode = txt.trim();
+                        inputTxt.setText(inputCode.substring(0, 60) + (inputCode.length > 60 ? '...' : '') + '|');
+                    }
+                });
+            } else {
+                const txt = prompt('Code einfügen:');
+                if (txt) {
+                    inputCode = txt.trim();
+                    inputTxt.setText(inputCode.substring(0, 60) + (inputCode.length > 60 ? '...' : '') + '|');
+                }
+            }
+        });
+
+        // Keyboard characters (for manual typing)
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+        const charBtns = [];
+        for (let i = 0; i < chars.length; i++) {
+            const c = chars[i];
+            const bx = 28 + (i % 22) * 34;
+            const by = 190 + Math.floor(i / 22) * 28;
+            const btn = this.add.text(bx, by, c, {
+                fontFamily: 'monospace', fontSize: '13px', color: '#FFF',
+                backgroundColor: '#444', padding: { x: 6, y: 3 }
+            }).setDepth(301).setInteractive({ useHandCursor: true });
+            btn.on('pointerdown', () => {
+                inputCode += c;
+                inputTxt.setText(inputCode.substring(Math.max(0, inputCode.length - 60)) + '|');
+                SndMgr.click();
+            });
+            charBtns.push(btn);
+        }
+
+        // Backspace
+        const btnDel = this.add.text(28 + 21 * 34, 190 + 2 * 28, 'DEL', {
+            fontFamily: 'monospace', fontSize: '13px', color: '#FFF',
+            backgroundColor: '#AA4444', padding: { x: 6, y: 3 }
+        }).setDepth(301).setInteractive({ useHandCursor: true });
+        btnDel.on('pointerdown', () => {
+            inputCode = inputCode.slice(0, -1);
+            inputTxt.setText((inputCode.substring(Math.max(0, inputCode.length - 60)) || '') + '|');
+            SndMgr.click();
+        });
+
+        // OK button
+        const btnOK = this.add.text(GW/2 - 60, GH - 70, ' LADEN ', {
+            fontFamily: 'monospace', fontSize: '16px', color: '#FFF',
+            backgroundColor: '#44AA44', padding: { x: 14, y: 6 }
+        }).setOrigin(0.5).setDepth(301).setInteractive({ useHandCursor: true });
+        btnOK.on('pointerdown', () => {
+            SndMgr.click();
+            this.importCode(inputCode);
+        });
+
+        const btnClose = this.add.text(GW/2 + 60, GH - 70, ' ABBRECHEN ', {
+            fontFamily: 'monospace', fontSize: '16px', color: '#FFF',
+            backgroundColor: '#555', padding: { x: 14, y: 6 }
+        }).setOrigin(0.5).setDepth(301).setInteractive({ useHandCursor: true });
+        btnClose.on('pointerdown', () => { SndMgr.click(); this.drawList(); });
+
+        // Also allow physical keyboard input
+        this.input.keyboard.on('keydown', (event) => {
+            if (event.key === 'Backspace') {
+                inputCode = inputCode.slice(0, -1);
+            } else if (event.key === 'Enter') {
+                this.importCode(inputCode);
+                return;
+            } else if (event.key.length === 1 && chars.includes(event.key)) {
+                inputCode += event.key;
+            }
+            inputTxt.setText((inputCode.substring(Math.max(0, inputCode.length - 60)) || '') + '|');
+        });
+    }
+
+    importCode(code) {
+        try {
+            const data = JSON.parse(atob(code));
+            if (!data.h || !Array.isArray(data.h)) throw new Error('Ungültig');
+            const save = SaveMgr.load();
+            // Merge highscores (add new ones, keep best per name+level combo, max 10)
+            data.h.forEach(hs => {
+                if (hs.name && typeof hs.money === 'number') {
+                    const exists = save.highscores.find(e => e.name === hs.name && e.money === hs.money && e.level === hs.level);
+                    if (!exists) save.highscores.push(hs);
+                }
+            });
+            save.highscores.sort((a, b) => b.money - a.money);
+            save.highscores = save.highscores.slice(0, 10);
+            if (data.t && data.t > save.totalMoney) save.totalMoney = data.t;
+            if (data.m && data.m > save.maxLevel) save.maxLevel = data.m;
+            SaveMgr.save(save);
+            this.showMessage(`${data.h.length} Scores geladen!`, '#44FF44');
+            this.time.delayedCall(1500, () => this.drawList());
+        } catch (e) {
+            this.showMessage('Ungültiger Code!', '#FF4444');
+        }
+    }
+
+    showMessage(text, color) {
+        const msg = this.add.text(GW/2, GH/2, text, {
+            fontFamily: 'monospace', fontSize: '20px', color: color,
+            stroke: '#000', strokeThickness: 3
+        }).setOrigin(0.5).setDepth(400);
+        this.tweens.add({ targets: msg, y: msg.y - 30, alpha: 0, duration: 2000, delay: 500, onComplete: () => msg.destroy() });
     }
 }
 
