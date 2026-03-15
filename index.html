@@ -6950,7 +6950,7 @@ class GameOverScene extends Phaser.Scene {
         const btnRetry = this.add.text(GW/2 - 100, 470, 'NOCHMAL!', { ...btnStyle, backgroundColor: '#44AA44' }).setOrigin(0.5).setInteractive({ useHandCursor: true });
         const btnMenu = this.add.text(GW/2 + 100, 470, 'MENÜ', { ...btnStyle, backgroundColor: '#3377AA' }).setOrigin(0.5).setInteractive({ useHandCursor: true });
 
-        btnRetry.on('pointerdown', () => { SndMgr.click(); this.scene.start('Game', { level: 1 }); });
+        btnRetry.on('pointerdown', () => { SndMgr.click(); this.scene.start('Game', { level: this.data.level || 1 }); });
         btnMenu.on('pointerdown', () => { SndMgr.click(); this.scene.start('Menu'); });
         [btnRetry, btnMenu].forEach(b => { b.on('pointerover', () => b.setScale(1.1)); b.on('pointerout', () => b.setScale(1)); });
     }
